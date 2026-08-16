@@ -19,9 +19,37 @@ function metaContent(name: string): string {
   );
 }
 
-function extractId(): string {
-  const m = location.href.match(/\/video\/(\d+)/) ?? location.href.match(/modal_id=(\d+)/);
-  return m ? `dy-${m[1]}` : `dy-${Date.now()}`;
+function extractId(root: ParentNode = document): string {
+  // 1. Từ URL trang chi tiết; 2. từ link /video/<id> trong container (feed); 3. timestamp
+  const fromUrl = location.href.match(/\/video\/(\d+)/) ?? location.href.match(/modal_id=(\d+)/);
+  if (fromUrl) return `dy-${fromUrl[1]}`;
+  const link = (root as Element | Document).querySelector?.('a[href*="/video/"]') as HTMLAnchorElement | null;
+  const fromLink = link?.href.match(/\/video\/(\d+)/);
+  return fromLink ? `dy-${fromLink[1]}` : `dy-${Date.now()}`;
+}
+
+/** Thumbnail nhiều tầng: poster → ảnh cover trong container (xgplayer) → img lớn nhất → og:image */
+function extractThumb(v: HTMLVideoElement | undefined, root: ParentNode): string {
+  if (v?.poster) return v.poster;
+
+  // xgplayer để cover trong div.xgplayer-poster (background-image)
+  const posterDiv = (root as Element | Document).querySelector?.(
+    ".xgplayer-poster, [class*='poster']",
+  ) as HTMLElement | null;
+  if (posterDiv) {
+    const bg = getComputedStyle(posterDiv).backgroundImage;
+    const m = bg.match(/url\(["']?(.+?)["']?\)/);
+    if (m?.[1] && m[1].startsWith("http")) return m[1];
+  }
+
+  // Ảnh lớn nhất trong container (bỏ avatar bé)
+  const imgs = Array.from((root as Element | Document).querySelectorAll?.("img") ?? []) as HTMLImageElement[];
+  const biggest = imgs
+    .filter((img) => img.naturalWidth >= 200 && img.src.startsWith("http"))
+    .sort((a, b) => b.naturalWidth * b.naturalHeight - a.naturalWidth * a.naturalHeight)[0];
+  if (biggest) return biggest.src;
+
+  return metaContent("og:image") || "";
 }
 
 /** Container logic của 1 video trong feed (hoặc cả trang nếu là trang chi tiết). */
@@ -42,7 +70,7 @@ function extractPage(video?: HTMLVideoElement): CapturedPage {
     const candidates = [v.src, ...Array.from(v.querySelectorAll("source")).map((s) => s.src)];
     videoUrl = candidates.find((u) => u && !u.startsWith("blob:")) ?? "";
   }
-  const thumbUrl = v?.poster || metaContent("og:image") || "";
+  const thumbUrl = extractThumb(v, root);
   const durationSeconds = v?.duration && isFinite(v.duration) ? Math.round(v.duration) : 0;
 
   const title =
@@ -72,7 +100,7 @@ function extractPage(video?: HTMLVideoElement): CapturedPage {
   };
 
   return {
-    rawId: extractId(),
+    rawId: extractId(root),
     title,
     author,
     sourceUrl: location.href,
