@@ -1,0 +1,417 @@
+<title>Duoyin Reup Pipeline</title>
+<style>
+  :root {
+    --bg: #F2F5F7;
+    --surface: #FFFFFF;
+    --ink: #17222C;
+    --muted: #5B6C7B;
+    --line: #D7DFE6;
+    --lane: #EAEFF3;
+    --accent: #D92B57;
+    --accent-soft: #FBE9EE;
+    --auto: #0E7D6B;
+    --auto-soft: #E2F3EF;
+    --warn: #A96A00;
+    --warn-soft: #F8EEDB;
+    --chip: #EDF1F4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0F151B;
+      --surface: #171F28;
+      --ink: #E7EDF2;
+      --muted: #93A4B2;
+      --line: #2B3945;
+      --lane: #1C2630;
+      --accent: #FF5E86;
+      --accent-soft: #3A1B26;
+      --auto: #3FBFA5;
+      --auto-soft: #14312B;
+      --warn: #E0A93C;
+      --warn-soft: #362B14;
+      --chip: #212C36;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0F151B;
+    --surface: #171F28;
+    --ink: #E7EDF2;
+    --muted: #93A4B2;
+    --line: #2B3945;
+    --lane: #1C2630;
+    --accent: #FF5E86;
+    --accent-soft: #3A1B26;
+    --auto: #3FBFA5;
+    --auto-soft: #14312B;
+    --warn: #E0A93C;
+    --warn-soft: #362B14;
+    --chip: #212C36;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.55;
+    margin: 0;
+    padding: 40px 20px 72px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px; }
+
+  .eyebrow {
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 10px;
+  }
+  h1 {
+    font-family: "Avenir Next Condensed", "Arial Narrow", "Avenir Next", sans-serif;
+    font-weight: 700; font-size: clamp(34px, 5vw, 52px);
+    letter-spacing: .01em; line-height: 1.05; margin: 0 0 12px; text-wrap: balance;
+  }
+  h1 .hl { color: var(--accent); }
+  .lede { max-width: 62ch; color: var(--muted); font-size: 17px; margin: 0; }
+
+  h2 {
+    font-family: "Avenir Next Condensed", "Arial Narrow", "Avenir Next", sans-serif;
+    font-weight: 600; font-size: 26px; margin: 0 0 6px; text-wrap: balance;
+  }
+  .sec-note { color: var(--muted); font-size: 15px; margin: 0 0 18px; max-width: 72ch; }
+
+  /* stat strip */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .stat {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 18px;
+  }
+  .stat b {
+    display: block; font-size: 24px; font-weight: 700;
+    font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+  }
+  .stat span { font-size: 13px; color: var(--muted); }
+
+  /* diagram card */
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    padding: 24px;
+  }
+  figure { margin: 0; }
+  .scroller { overflow-x: auto; }
+  .scroller svg { min-width: 900px; max-width: 100%; height: auto; display: block; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 14px; max-width: 80ch; }
+
+  /* svg classes */
+  .lane-bg { fill: var(--lane); }
+  .lane-title { font-family: "SF Mono", Menlo, monospace; font-size: 12px; letter-spacing: .12em; fill: var(--muted); text-transform: uppercase; }
+  .node { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+  .node-accent { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  .nt { font-size: 13px; font-weight: 600; fill: var(--ink); }
+  .ns { font-size: 11.5px; fill: var(--muted); }
+  .edge { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  .edge-accent { stroke: var(--accent); stroke-width: 1.8; fill: none; }
+  .elabel { font-family: "SF Mono", Menlo, monospace; font-size: 10.5px; fill: var(--muted); }
+  .ptag { font-family: "SF Mono", Menlo, monospace; font-size: 11px; font-weight: 700; letter-spacing: .1em; fill: var(--accent); }
+
+  /* ingest cards */
+  .paths { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .path {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 20px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .badge {
+    align-self: flex-start; font-family: "SF Mono", Menlo, monospace;
+    font-size: 11px; font-weight: 700; letter-spacing: .08em;
+    padding: 3px 10px; border-radius: 999px;
+  }
+  .badge.auto  { background: var(--auto-soft); color: var(--auto); }
+  .badge.semi  { background: var(--accent-soft); color: var(--accent); }
+  .badge.manual{ background: var(--warn-soft); color: var(--warn); }
+  .path h3 { margin: 0; font-size: 16.5px; }
+  .steps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; padding: 0; list-style: none; }
+  .steps li {
+    background: var(--chip); border-radius: 6px; padding: 4px 10px;
+    font-size: 12.5px; white-space: nowrap;
+  }
+  .steps li:not(:last-child)::after { content: " →"; color: var(--muted); margin-left: 6px; }
+  .path p { margin: 0; font-size: 13.5px; color: var(--muted); }
+
+  .verdict {
+    border-left: 3px solid var(--accent);
+    background: var(--surface); border-radius: 0 12px 12px 0;
+    border-top: 1px solid var(--line); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+    padding: 16px 22px; margin-top: 16px;
+  }
+  .verdict b { color: var(--accent); }
+  .verdict p { margin: 6px 0 0; font-size: 14.5px; max-width: 82ch; }
+
+  /* roadmap */
+  .phases { display: flex; flex-direction: column; gap: 0; counter-reset: none; }
+  .phase {
+    display: grid; grid-template-columns: 92px 1fr; gap: 18px;
+    padding: 16px 4px; border-bottom: 1px solid var(--line);
+  }
+  .phase:last-child { border-bottom: none; }
+  .pnum {
+    font-family: "SF Mono", Menlo, monospace; font-size: 13px; font-weight: 700;
+    color: var(--muted); padding-top: 2px;
+  }
+  .pnum.done { color: var(--auto); }
+  .pnum.next { color: var(--accent); }
+  .phase h3 { margin: 0 0 4px; font-size: 16px; }
+  .phase p { margin: 0; font-size: 14px; color: var(--muted); max-width: 78ch; }
+  .tag {
+    display: inline-block; font-family: "SF Mono", Menlo, monospace; font-size: 10.5px;
+    font-weight: 700; letter-spacing: .08em; border-radius: 999px; padding: 2px 9px;
+    margin-left: 8px; vertical-align: 2px;
+  }
+  .tag.done { background: var(--auto-soft); color: var(--auto); }
+  .tag.next { background: var(--accent-soft); color: var(--accent); }
+
+  footer { font-size: 12.5px; color: var(--muted); font-family: "SF Mono", Menlo, monospace; }
+
+  .contract {
+    background: var(--chip); border: 1px dashed var(--line); border-radius: 10px;
+    padding: 14px 18px; font-family: "SF Mono", Menlo, monospace;
+    font-size: 12.5px; line-height: 1.9; margin: 0 0 16px; overflow-x: auto; white-space: nowrap;
+  }
+  .contract b { color: var(--accent); }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">duoyin-videos · thiết kế 16.08.2026 · đã duyệt kiến trúc</p>
+    <h1>Dây chuyền reup: xóa sub <span class="hl">∥</span> lồng tiếng Việt</h1>
+    <p class="lede">Một click trên trang video — extension nhặt file + toàn bộ metadata đẩy lên Drive/Sheet; container GPU xóa hardsub và lồng tiếng Việt <em>cùng lúc</em> trên cùng một video, ghép lại rồi trả link thành phẩm về Sheet. Máy chỉ bật khi có việc.</p>
+  </header>
+
+  <section class="stats">
+    <div class="stat"><b>~1.200⚡</b><span>mỗi video 10 phút (RTX 3090, đã gồm cả 2 bước)</span></div>
+    <div class="stat"><b>10–12 phút</b><span>máy chạy cho video 10 phút — dub "trốn" trong lúc xóa sub</span></div>
+    <div class="stat"><b>2 việc · 1 GPU</b><span>VSR ~2GB + VoiceStudio ~6–8GB, vừa vặn VRAM 24GB</span></div>
+    <div class="stat"><b>1 click</b><span>extension nhặt video + metadata — phần sau tự động 100%</span></div>
+  </section>
+
+  <section class="card">
+    <h2>Toàn luồng xử lý</h2>
+    <p class="sec-note">Ba khu vực: việc của bạn, kho trung gian trên cloud (sống sót kể cả khi xóa container), và container GPU thuê theo giờ.</p>
+    <figure>
+      <div class="scroller">
+      <svg viewBox="0 0 1060 650" role="img" aria-label="Sơ đồ toàn luồng: extension 1-click đẩy video và metadata lên Drive và Sheet; worker trên container GPU poll Sheet, tải từ Drive, chạy song song VSR xóa sub và VoiceStudio lồng tiếng, ghép bằng ffmpeg, up thành phẩm lên Drive và báo qua Telegram.">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+          </marker>
+          <marker id="arrA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" style="fill: var(--accent)"></path>
+          </marker>
+        </defs>
+
+        <!-- lanes -->
+        <rect class="lane-bg" x="16" y="54" width="300" height="580" rx="12"></rect>
+        <rect class="lane-bg" x="356" y="54" width="300" height="580" rx="12"></rect>
+        <rect class="lane-bg" x="696" y="54" width="348" height="580" rx="12"></rect>
+        <text class="lane-title" x="36" y="36">Bạn — local / điện thoại</text>
+        <text class="lane-title" x="376" y="36">Cloud — Sheet · Drive · Telegram</text>
+        <text class="lane-title" x="716" y="36">Container GPU — bật khi có việc</text>
+
+        <!-- lane 1 nodes -->
+        <rect class="node" x="36" y="80" width="260" height="64" rx="8"></rect>
+        <text class="nt" x="52" y="103">Extension — 1 click trên trang video</text>
+        <text class="ns" x="52" y="121">nhặt video + title + thumbnail</text>
+        <text class="ns" x="52" y="136">+ description + author (meta.json)</text>
+
+        <rect class="node" x="36" y="180" width="260" height="54" rx="8" stroke-dasharray="5 4"></rect>
+        <text class="nt" x="52" y="203">Dự phòng khi extension hỏng</text>
+        <text class="ns" x="52" y="221">tải tay → up Drive → điền Sheet</text>
+
+        <rect class="node" x="36" y="560" width="260" height="54" rx="8"></rect>
+        <text class="nt" x="52" y="583">Nhận thông báo + link</text>
+        <text class="ns" x="52" y="601">xem thành phẩm, tự upload lên kênh</text>
+
+        <!-- lane 2 nodes -->
+        <rect class="node" x="376" y="80" width="260" height="54" rx="8"></rect>
+        <text class="nt" x="392" y="103">Google Sheet</text>
+        <text class="ns" x="392" y="121">hàng đợi · dashboard · lịch sử</text>
+
+        <rect class="node" x="376" y="170" width="260" height="64" rx="8"></rect>
+        <text class="nt" x="392" y="193">Google Drive</text>
+        <text class="ns" x="392" y="211">kho video thô vào · thành phẩm ra</text>
+
+        <rect class="node" x="376" y="560" width="260" height="54" rx="8"></rect>
+        <text class="nt" x="392" y="583">Telegram Bot</text>
+        <text class="ns" x="392" y="601">tiến độ · lỗi · nhắc tắt máy</text>
+
+        <!-- lane 3 nodes -->
+        <rect class="node" x="716" y="80" width="308" height="54" rx="8"></rect>
+        <text class="nt" x="732" y="103">Worker</text>
+        <text class="ns" x="732" y="121">poll Sheet 30s, nhận dòng NEW</text>
+
+        <rect class="node" x="716" y="170" width="308" height="54" rx="8"></rect>
+        <text class="nt" x="732" y="193">Tải từ Drive</text>
+        <text class="ns" x="732" y="211">rclone copy — video.mp4 + meta.json</text>
+
+        <!-- parallel pair -->
+        <text class="ptag" x="732" y="252">CHẠY SONG SONG — 1 VIDEO</text>
+        <rect class="node-accent" x="716" y="262" width="148" height="86" rx="8"></rect>
+        <text class="nt" x="730" y="285">VSR</text>
+        <text class="ns" x="730" y="303">xóa hardsub</text>
+        <text class="ns" x="730" y="318">track hình</text>
+        <text class="ns" x="730" y="336">~2.4× thời lượng</text>
+
+        <rect class="node-accent" x="876" y="262" width="148" height="86" rx="8"></rect>
+        <text class="nt" x="890" y="285">VoiceStudio</text>
+        <text class="ns" x="890" y="303">dịch + lồng tiếng Việt</text>
+        <text class="ns" x="890" y="318">track tiếng</text>
+        <text class="ns" x="890" y="336">~0.4× thời lượng</text>
+
+        <rect class="node" x="716" y="404" width="308" height="54" rx="8"></rect>
+        <text class="nt" x="732" y="427">ffmpeg — ghép</text>
+        <text class="ns" x="732" y="445">hình sạch + tiếng Việt, vài giây</text>
+
+        <rect class="node" x="716" y="484" width="308" height="46" rx="8"></rect>
+        <text class="nt" x="732" y="503">Up thành phẩm · ghi link vào Sheet</text>
+        <text class="ns" x="732" y="520">rclone → Drive, status = DONE</text>
+
+        <rect class="node" x="716" y="560" width="308" height="54" rx="8"></rect>
+        <text class="nt" x="732" y="583">Queue rỗng</text>
+        <text class="ns" x="732" y="601">nhắn Telegram nhắc tắt máy → 0⚡</text>
+
+        <!-- edges lane1 -> lane2 -->
+        <g style="color: var(--muted)">
+          <line class="edge" x1="296" y1="100" x2="372" y2="100" marker-end="url(#arr)"></line>
+          <text class="elabel" x="300" y="92">dòng NEW + metadata</text>
+
+          <polyline class="edge" points="296,128 336,128 336,190 372,190" marker-end="url(#arr)"></polyline>
+          <text class="elabel" x="350" y="168" transform="rotate(-90 350 168)">video·thumb·meta</text>
+
+          <line class="edge" x1="296" y1="214" x2="372" y2="214" marker-end="url(#arr)" stroke-dasharray="5 4"></line>
+          <text class="elabel" x="300" y="230">cùng hợp đồng</text>
+
+          <!-- sheet <-> worker -->
+          <line class="edge" x1="636" y1="107" x2="712" y2="107" marker-end="url(#arr)" marker-start="url(#arr)"></line>
+          <text class="elabel" x="644" y="99">poll · status</text>
+
+          <!-- drive -> download -->
+          <line class="edge" x1="636" y1="197" x2="712" y2="197" marker-end="url(#arr)"></line>
+          <text class="elabel" x="648" y="189">rclone</text>
+
+          <!-- worker -> download -->
+          <line class="edge" x1="870" y1="134" x2="870" y2="166" marker-end="url(#arr)"></line>
+
+          <!-- mux -> upload -->
+          <line class="edge" x1="870" y1="458" x2="870" y2="480" marker-end="url(#arr)"></line>
+
+          <!-- upload -> drive (elbow through gutter) -->
+          <polyline class="edge" points="716,507 676,507 676,202 640,202" marker-end="url(#arr)"></polyline>
+          <text class="elabel" x="682" y="360" transform="rotate(-90 682 360)">thành phẩm + link</text>
+
+          <!-- upload -> idle -->
+          <line class="edge" x1="870" y1="530" x2="870" y2="556" marker-end="url(#arr)"></line>
+
+          <!-- idle -> telegram -->
+          <line class="edge" x1="716" y1="587" x2="640" y2="587" marker-end="url(#arr)"></line>
+
+          <!-- telegram -> user -->
+          <line class="edge" x1="376" y1="587" x2="300" y2="587" marker-end="url(#arr)"></line>
+          <text class="elabel" x="308" y="579">DONE / lỗi</text>
+        </g>
+
+        <!-- accent edges: download -> parallel -> mux -->
+        <polyline class="edge-accent" points="870,224 870,240 790,240 790,258" marker-end="url(#arrA)"></polyline>
+        <polyline class="edge-accent" points="870,240 950,240 950,258" marker-end="url(#arrA)"></polyline>
+        <polyline class="edge-accent" points="790,348 790,380 870,380 870,400" marker-end="url(#arrA)"></polyline>
+        <polyline class="edge-accent" points="950,348 950,380 872,380"></polyline>
+      </svg>
+      </div>
+      <figcaption>Hai nhánh màu đỏ là điểm ăn tiền: VSR chỉ đụng track hình, VoiceStudio chỉ đụng track tiếng — độc lập hoàn toàn nên chạy đồng thời trên cùng video. Thời gian máy ≈ nhánh chậm nhất (VSR), bước lồng tiếng gần như miễn phí về giờ thuê.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Ingest: extension tự viết là cổng vào duy nhất</h2>
+    <p class="sec-note">Không có nguồn public → không có yt-dlp trong hệ thống. Cookies + IP datacenter dính risk-control Douyin, còn session đăng nhập thật trong browser là trình tải đáng tin nhất — và metadata (title, thumbnail, description, author) nằm sẵn trong DOM. Worker chỉ đọc một <em>hợp đồng dữ liệu</em>, không biết nguồn video là gì.</p>
+    <div class="contract">
+      <b>HỢP ĐỒNG INGEST</b> (bất biến — ai ghi vào cũng được, worker chỉ đọc)<br>
+      Sheet row&nbsp;&nbsp;: id · title · author · source_url · drive_folder_link · voice · status · output_link<br>
+      Drive folder: video.mp4 · thumb.jpg · meta.json (title, desc, tags, author, stats)
+    </div>
+    <div class="paths">
+      <div class="path">
+        <span class="badge auto">CHÍNH — DUY NHẤT</span>
+        <h3>Extension tự viết (Chrome)</h3>
+        <ul class="steps">
+          <li>Xem trang video</li>
+          <li>1 click</li>
+          <li>File + meta lên Drive · Sheet</li>
+        </ul>
+        <p>Tải bằng session đăng nhập thật, nhặt metadata ngay trong DOM. Douyin đổi giao diện → chỉ sửa extension, worker nguyên vẹn.</p>
+      </div>
+      <div class="path">
+        <span class="badge manual">DỰ PHÒNG</span>
+        <h3>Tải tay</h3>
+        <ul class="steps">
+          <li>Extension có sẵn tải video</li>
+          <li>Up Drive</li>
+          <li>Điền dòng Sheet</li>
+        </ul>
+        <p>Khi extension hỏng. Ghi đúng cùng hợp đồng → toàn bộ phần xử lý phía sau vẫn tự động.</p>
+      </div>
+    </div>
+    <div class="verdict">
+      <b>Kết luận:</b>
+      <p>Worker lõi là đúng một quy trình xử lý video (Drive vào → Drive ra), không chứa bất kỳ logic ingest nào. Mọi coupling với trang nguồn dồn hết về extension.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Stack &amp; quy trình code</h2>
+    <div class="contract">
+      Extension : <b>TypeScript</b> — Manifest V3, build Vite · chạy trên Chrome máy local<br>
+      Worker&nbsp;&nbsp;&nbsp; : <b>Python 3.12</b> (uv) — gọi VSR CLI · VoiceStudio REST · gspread · rclone<br>
+      Hợp đồng&nbsp; : <b>JSON Schema</b> — extension sinh TS types, worker validate bằng pydantic<br>
+      Code flow : local (Claude Code) → push GitHub private → container <b>git clone + ./setup.sh</b> lần đầu, <b>git pull + restart</b> các lần sau · secrets scp 1 lần, không commit
+    </div>
+    <p class="sec-note" style="margin:0">Container chỉ là nơi <em>chạy</em> — code luôn ở local + GitHub, xóa máy thuê không mất gì. Extension dev hoàn toàn ở local (Load unpacked), không liên quan container.</p>
+  </section>
+
+  <section class="card">
+    <h2>Lộ trình</h2>
+    <p class="sec-note">Extension lên trước — nó chỉ phụ thuộc hợp đồng ingest, không phụ thuộc worker. Spike VoiceStudio tranh thủ chạy lúc container đang bật sẵn.</p>
+    <div class="phases">
+      <div class="phase">
+        <div class="pnum done">16.08 ✓</div>
+        <div><h3>Fix VSR trên container <span class="tag done">ĐÃ XONG</span></h3>
+        <p>libxkbcommon0, scipy 1.13.1, app.py gọi đúng CLI. Đo thực tế: sttn-auto ≈ 2.4× thời lượng, 1.7GB VRAM.</p></div>
+      </div>
+      <div class="phase">
+        <div class="pnum next">PHASE 1</div>
+        <div><h3>Nơi lưu trước: Drive + Sheet + hợp đồng <span class="tag next">TIẾP THEO</span></h3>
+        <p>Tạo Drive thật (inbox/ mỗi video 1 folder · output/), Sheet thật đủ cột + dòng mẫu, service account share quyền. Rồi mới văn bản hóa thành meta.schema.json + sheet-columns.md trong repo GitHub private. Hợp đồng v1 chốt → hai phía code theo nó.</p></div>
+      </div>
+      <div class="phase">
+        <div class="pnum">PHASE 2</div>
+        <div><h3>Extension ingest (TypeScript, Manifest V3)</h3>
+        <p>Nút 1-click trên trang video: bắt file + title/description/tags/author + thumbnail, up Drive (resumable qua chrome.identity), ghi Sheet theo hợp đồng. Deliverable: click → mọi thứ nằm đúng chỗ trên Drive + dòng NEW trong Sheet.</p></div>
+      </div>
+      <div class="phase">
+        <div class="pnum">PHASE 3</div>
+        <div><h3>Spike VoiceStudio + worker lõi (Python)</h3>
+        <p>Cài VoiceStudio headless, dub thử 1.mp4 sang tiếng Việt — đo thời gian/VRAM/chất lượng, chốt thuê 3090. Worker CLI: song song VSR ∥ dub → mux. Đúng 1 quy trình xử lý, không chứa logic ingest.</p></div>
+      </div>
+      <div class="phase">
+        <div class="pnum">PHASE 4</div>
+        <div><h3>Nối vòng: Sheet + Drive + Telegram</h3>
+        <p>Service account, worker poll Sheet, rclone 2 chiều, bot thông báo, setup.sh hoàn chỉnh. Deliverable: click extension → thành phẩm tự về Drive, không đụng terminal.</p></div>
+      </div>
+      <div class="phase">
+        <div class="pnum">PHASE 5</div>
+        <div><h3>Tối ưu & tiện ích</h3>
+        <p>Pipeline nhiều video đồng thời, retry, log chi phí ⚡/video · sinh title/description/tags tiếng Việt bằng LLM từ metadata gốc · cân nhắc auto-upload (YouTube API app chưa verify sẽ khóa video ở private).</p></div>
+      </div>
+    </div>
+  </section>
+
+  <footer>docs: ~/Desktop/Project/duoyin-videos/2026-08-16-reup-pipeline-design.md</footer>
+
+</div>

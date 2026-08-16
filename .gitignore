@@ -1,0 +1,18 @@
+# secrets — không bao giờ commit
+secrets/
+.env
+*.json.key
+service-account*.json
+rclone.conf
+cookies*.txt
+
+# build / deps
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# hệ điều hành
+.DS_Store

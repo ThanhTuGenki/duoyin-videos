@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "duoyin-videos/contract/meta.schema.json",
+  "title": "Ingest meta.json",
+  "description": "Metadata của 1 video trong folder Drive inbox/<id>/. Extension ghi, worker đọc. Đổi file này = đổi hợp đồng — phải bump schema_version.",
+  "type": "object",
+  "required": ["schema_version", "id", "title", "source_url", "files"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "id": {
+      "type": "string",
+      "description": "Trùng tên folder Drive và cột id trong Sheet",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "title": { "type": "string", "description": "Title gốc từ trang video" },
+    "author": { "type": "string", "description": "Kênh/tác giả gốc" },
+    "source_url": { "type": "string", "format": "uri", "description": "Link gốc — chỉ để tham khảo, worker không dùng để tải" },
+    "description": { "type": "string" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "stats": {
+      "type": "object",
+      "properties": {
+        "likes": { "type": "integer" },
+        "comments": { "type": "integer" },
+        "shares": { "type": "integer" }
+      }
+    },
+    "duration_seconds": { "type": "number" },
+    "captured_at": { "type": "string", "format": "date-time", "description": "Thời điểm extension bắt video" },
+    "files": {
+      "type": "object",
+      "required": ["video"],
+      "properties": {
+        "video": { "type": "string", "description": "Tên file video trong cùng folder, thường video.mp4" },
+        "thumbnail": { "type": "string", "description": "Tên file thumbnail, thường thumb.jpg" }
+      }
+    }
+  }
+}
