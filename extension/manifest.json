@@ -20,7 +20,7 @@
     }
   ],
   "options_page": "options.html",
-  "permissions": ["identity", "storage", "activeTab", "webRequest", "notifications"],
+  "permissions": ["identity", "storage", "activeTab", "scripting", "webRequest", "notifications"],
   "host_permissions": ["<all_urls>"],
   "oauth2": {
     "client_id": "961834092616-ff7djsoa8gcms80hv0ajhpohtal39co4.apps.googleusercontent.com",

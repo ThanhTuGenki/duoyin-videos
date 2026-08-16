@@ -10,10 +10,11 @@ export interface ExtractResponse {
   error?: string;
 }
 
-/** popup → background: thực hiện ingest */
+/** popup/content → background: thực hiện ingest.
+ *  tabId chỉ cần khi gửi từ popup — content script để background tự lấy sender.tab.id */
 export interface IngestRequest {
   kind: "ingest";
-  tabId: number;
+  tabId?: number;
   page: CapturedPage;
 }
 

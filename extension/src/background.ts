@@ -31,6 +31,7 @@ chrome.webRequest.onResponseStarted.addListener(
     const current = sniffedByTab.get(details.tabId);
     // Giữ URL có content-length lớn nhất (video chính > preroll/audio nhỏ)
     if (!current || contentLength >= current.contentLength) {
+      dlog(`sniff tab=${details.tabId} len=${contentLength} ${details.url.slice(0, 110)}`);
       // Bỏ tham số byte-range (bytes=...) khỏi URL nếu Douyin nhét vào query
       const url = details.url.replace(/([?&])range=[^&]*/,"$1").replace(/[?&]$/, "");
       sniffedByTab.set(details.tabId, { url, contentLength });
@@ -47,7 +48,18 @@ chrome.webNavigation?.onCommitted?.addListener?.((d) => {
 
 // ── Ingest ───────────────────────────────────────────────────────
 
+// Ring buffer log để debug từ bên ngoài (Playwright poll qua worker.evaluate)
+const debugLogs: string[] = [];
+(globalThis as Record<string, unknown>).__ingestLogs = debugLogs;
+function dlog(msg: string): void {
+  const line = `${new Date().toISOString()} ${msg}`;
+  debugLogs.push(line);
+  if (debugLogs.length > 500) debugLogs.shift();
+  console.log("[ingest]", msg);
+}
+
 function progress(step: string, done = false, error?: string): void {
+  dlog(error ? `ERROR: ${error}` : step);
   const ev: ProgressEvent = { kind: "progress", step, done, error };
   chrome.runtime.sendMessage(ev).catch(() => {
     /* popup có thể đã đóng */
@@ -61,12 +73,12 @@ async function fetchBlob(url: string, referer: string): Promise<Blob> {
   return res.blob();
 }
 
-async function runIngest(req: IngestRequest): Promise<void> {
+async function runIngest(req: IngestRequest, tabId: number): Promise<void> {
   const cfg = await loadConfig();
   const page: CapturedPage = req.page;
 
   // 1. Chốt URL video: ứng viên từ DOM, không có thì lấy URL sniff được
-  const sniffed = sniffedByTab.get(req.tabId);
+  const sniffed = sniffedByTab.get(tabId);
   const videoUrl = page.videoUrl || sniffed?.url || "";
   if (!videoUrl) {
     throw new Error(
@@ -125,9 +137,14 @@ async function runIngest(req: IngestRequest): Promise<void> {
   });
 }
 
-chrome.runtime.onMessage.addListener((msg: IngestRequest, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg: IngestRequest, sender, sendResponse) => {
   if (msg.kind !== "ingest") return;
-  runIngest(msg)
+  const tabId = sender.tab?.id ?? msg.tabId;
+  if (tabId === undefined) {
+    sendResponse({ ok: false, error: "Không xác định được tab nguồn" });
+    return;
+  }
+  runIngest(msg, tabId)
     .then(() => sendResponse({ ok: true }))
     .catch((e) => {
       const message = e instanceof Error ? e.message : String(e);

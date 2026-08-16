@@ -26,7 +26,15 @@ btn.addEventListener("click", async () => {
 
     line("… Nhặt metadata từ trang");
     const extract: ExtractRequest = { kind: "extract" };
-    const res = (await chrome.tabs.sendMessage(tab.id, extract)) as ExtractResponse;
+    let res: ExtractResponse | undefined;
+    try {
+      res = (await chrome.tabs.sendMessage(tab.id, extract)) as ExtractResponse;
+    } catch {
+      // Content script chưa được tiêm (tab mở trước khi extension load) → tiêm rồi thử lại
+      line("… Tiêm content script vào tab");
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+      res = (await chrome.tabs.sendMessage(tab.id, extract)) as ExtractResponse;
+    }
     if (!res?.ok || !res.page) throw new Error(res?.error ?? "Trang này chưa được hỗ trợ (content script không chạy)");
     line(`✓ ${res.page.title || "(không có title)"}`);
 
