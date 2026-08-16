@@ -1,202 +1,225 @@
-// Content script — adapter Douyin:
-// 1. Nhặt metadata + URL video ứng viên (scoped theo container video đang bấm)
-// 2. Chèn nút "＋Q" lên góc mỗi video: bấm là gửi thẳng video đó vào queue
-// Douyin đổi giao diện thường xuyên: mọi selector đều best-effort nhiều tầng fallback.
+// Content script — adapter Douyin PC (app RSC/Pace).
+// Điều tra thực tế (2026-08-16) cho thấy:
+//  - Feed thuần /jingxuan KHÔNG có metadata dùng được (chỉ 1 <video> ẩn pre-create).
+//  - Modal detail /jingxuan?modal_id=<id> có ĐỦ: container [data-e2e="feed-active-video"]
+//    với video-desc / feed-video-nickname / video-player-digg|collect|share, video blob thật,
+//    ảnh cover 640x360; và #RENDER_DATA (camelCase: awemeId/desc/authorInfo/textExtra/video.cover)
+//    cho title gốc tiếng Trung + cover HD khi awemeId === modal_id.
+// => Extension chỉ ingest khi đang ở modal detail. 1 nút ＋Q gắn vào container active.
 
 import type { CapturedPage } from "./lib/contract";
 import type { ExtractRequest, ExtractResponse, IngestRequest, ProgressEvent } from "./lib/messages";
 import { parseCount } from "./lib/parse";
 
-function textIn(root: ParentNode, selector: string): string {
-  return root.querySelector(selector)?.textContent?.trim() ?? "";
+// Guard: tránh chạy 2 lần nếu bị inject lại (manifest + popup executeScript)
+if ((window as unknown as { __duoyinIngest?: boolean }).__duoyinIngest) {
+  // đã chạy rồi
+} else {
+  (window as unknown as { __duoyinIngest?: boolean }).__duoyinIngest = true;
+  main();
 }
 
-function metaContent(name: string): string {
-  return (
-    document.querySelector<HTMLMetaElement>(`meta[property="${name}"]`)?.content ??
-    document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content ??
-    ""
-  );
+function main(): void {
+  observeActiveVideo();
+  chrome.runtime.onMessage.addListener((msg: ExtractRequest, _s, sendResponse) => {
+    if (msg.kind !== "extract") return;
+    const page = extractActive();
+    sendResponse(
+      page ? { ok: true, page } : { ok: false, error: "Chưa mở video ở chế độ xem chi tiết (modal). Bấm vào 1 video rồi thử lại." } as ExtractResponse,
+    );
+    return true;
+  });
 }
 
-function extractId(root: ParentNode = document): string {
-  // 1. Từ URL trang chi tiết; 2. từ link /video/<id> trong container (feed); 3. timestamp
-  const fromUrl = location.href.match(/\/video\/(\d+)/) ?? location.href.match(/modal_id=(\d+)/);
-  if (fromUrl) return `dy-${fromUrl[1]}`;
-  const link = (root as Element | Document).querySelector?.('a[href*="/video/"]') as HTMLAnchorElement | null;
-  const fromLink = link?.href.match(/\/video\/(\d+)/);
-  return fromLink ? `dy-${fromLink[1]}` : `dy-${Date.now()}`;
+// ── Trích metadata từ video đang active trong modal ──────────────
+
+function modalId(): string | null {
+  return new URLSearchParams(location.search).get("modal_id") ?? location.href.match(/\/video\/(\d+)/)?.[1] ?? null;
 }
 
-/** Thumbnail nhiều tầng: poster → ảnh cover trong container (xgplayer) → img lớn nhất → og:image */
-function extractThumb(v: HTMLVideoElement | undefined, root: ParentNode): string {
-  if (v?.poster) return v.poster;
+function cleanDesc(raw: string): string {
+  return raw.replace(/(展开|收起|展開)$/u, "").trim();
+}
 
-  // xgplayer để cover trong div.xgplayer-poster (background-image)
-  const posterDiv = (root as Element | Document).querySelector?.(
-    ".xgplayer-poster, [class*='poster']",
-  ) as HTMLElement | null;
-  if (posterDiv) {
-    const bg = getComputedStyle(posterDiv).backgroundImage;
-    const m = bg.match(/url\(["']?(.+?)["']?\)/);
-    if (m?.[1] && m[1].startsWith("http")) return m[1];
+/** Đọc #RENDER_DATA (camelCase) tìm object aweme khớp id. Trả null nếu không khớp. */
+function renderDataAweme(id: string): { desc: string; author: string; cover: string; tags: string[] } | null {
+  const raw = document.querySelector("#RENDER_DATA")?.textContent;
+  if (!raw) return null;
+  let text = raw;
+  try {
+    text = decodeURIComponent(raw);
+  } catch {
+    /* đã là plain */
   }
-
-  // Ảnh lớn nhất trong container (bỏ avatar bé)
-  const imgs = Array.from((root as Element | Document).querySelectorAll?.("img") ?? []) as HTMLImageElement[];
-  const biggest = imgs
-    .filter((img) => img.naturalWidth >= 200 && img.src.startsWith("http"))
-    .sort((a, b) => b.naturalWidth * b.naturalHeight - a.naturalWidth * a.naturalHeight)[0];
-  if (biggest) return biggest.src;
-
-  return metaContent("og:image") || "";
-}
-
-/** Container logic của 1 video trong feed (hoặc cả trang nếu là trang chi tiết). */
-function containerOf(video: HTMLVideoElement): ParentNode {
-  return (
-    video.closest('[data-e2e="feed-active-video"]') ??
-    video.closest("[data-e2e]")?.parentElement ??
-    document
-  );
-}
-
-function extractPage(video?: HTMLVideoElement): CapturedPage {
-  const v = video ?? document.querySelector<HTMLVideoElement>("video") ?? undefined;
-  const root: ParentNode = v ? containerOf(v) : document;
-
-  let videoUrl = "";
-  if (v) {
-    const candidates = [v.src, ...Array.from(v.querySelectorAll("source")).map((s) => s.src)];
-    videoUrl = candidates.find((u) => u && !u.startsWith("blob:")) ?? "";
+  const anchor = text.indexOf(id);
+  if (anchor < 0) return null; // data động: user đã swipe khác video ban đầu
+  let start = text.lastIndexOf("{", anchor);
+  for (let tries = 0; tries < 8 && start >= 0; tries++) {
+    let depth = 0;
+    for (let i = start; i < Math.min(text.length, start + 90000); i++) {
+      if (text[i] === "{") depth++;
+      else if (text[i] === "}") {
+        if (--depth === 0) {
+          try {
+            const o = JSON.parse(text.slice(start, i + 1));
+            if ((o.awemeId === id || o.desc) && (o.desc || o.video)) {
+              return {
+                desc: cleanDesc(o.desc ?? ""),
+                author: o.authorInfo?.nickname ?? o.author?.nickname ?? "",
+                cover: o.video?.cover ?? o.video?.coverUrlList?.[0] ?? o.video?.originCoverUrlList?.[0] ?? "",
+                tags: (o.textExtra ?? []).map((t: { hashtagName?: string }) => t.hashtagName).filter(Boolean),
+              };
+            }
+          } catch {
+            /* không phải JSON hợp lệ */
+          }
+          break;
+        }
+      }
+    }
+    start = text.lastIndexOf("{", start - 1);
   }
-  const thumbUrl = extractThumb(v, root);
-  const durationSeconds = v?.duration && isFinite(v.duration) ? Math.round(v.duration) : 0;
+  return null;
+}
 
-  const title =
-    textIn(root, '[data-e2e="detail-video-title"]') ||
-    textIn(root, '[data-e2e="video-desc"]') ||
-    metaContent("og:title") ||
-    document.title.replace(/\s*-\s*抖音.*$/, "").trim();
+/** Ảnh cover 640x360 (tos-cn-p) trong container active — bỏ avatar/icon nhỏ. */
+function domCover(active: Element): string {
+  const imgs = Array.from(active.querySelectorAll("img")) as HTMLImageElement[];
+  const cover = imgs
+    .filter((im) => im.src.startsWith("http") && im.naturalWidth >= 300)
+    .sort((a, b) => b.naturalWidth - a.naturalWidth)[0];
+  return cover?.src ?? "";
+}
 
-  const author =
-    textIn(root, '[data-e2e="detail-video-nickname"]') ||
-    textIn(root, '[data-e2e="video-author-name"]') ||
-    textIn(root, '[data-e2e="feed-video-nickname"]');
+function activeContainer(): Element | null {
+  return document.querySelector('[data-e2e="feed-active-video"]');
+}
 
-  const tags = Array.from(
-    new Set(
-      Array.from(root.querySelectorAll('[data-e2e="detail-video-title"] a, [data-e2e="video-desc"] a'))
-        .map((a) => a.textContent?.trim() ?? "")
-        .filter((t) => t.startsWith("#"))
-        .map((t) => t.replace(/^#/, "")),
-    ),
-  );
+export function extractActive(): CapturedPage | null {
+  const id = modalId();
+  const active = activeContainer();
+  if (!id || !active) return null;
+
+  const q = (sel: string) => active.querySelector(sel)?.textContent?.trim() ?? "";
+  const domDesc = cleanDesc(q('[data-e2e="video-desc"]'));
+  const domAuthor = q('[data-e2e="feed-video-nickname"]').replace(/^@/, "");
+
+  // Ưu tiên RENDER_DATA (title gốc tiếng Trung sạch + cover HD) khi khớp id
+  const rd = renderDataAweme(id);
 
   const stats = {
-    likes: parseCount(textIn(root, '[data-e2e="video-player-digg"], [data-e2e="like-count"]')),
-    comments: parseCount(textIn(root, '[data-e2e="video-player-comment"], [data-e2e="comment-count"]')),
-    shares: parseCount(textIn(root, '[data-e2e="video-player-share"], [data-e2e="share-count"]')),
+    likes: parseCount(q('[data-e2e="video-player-digg"]')),
+    comments: parseCount(q('[data-e2e="video-player-comment"]')),
+    shares: parseCount(q('[data-e2e="video-player-share"]')),
   };
+
+  const active_video = active.querySelector("video");
+  const durationSeconds = active_video?.duration && isFinite(active_video.duration) ? Math.round(active_video.duration) : 0;
 
   return {
-    rawId: extractId(root),
-    title,
-    author,
-    sourceUrl: location.href,
-    description: metaContent("og:description") || title,
-    tags,
+    rawId: `dy-${id}`,
+    title: rd?.desc || domDesc,
+    author: rd?.author || domAuthor,
+    sourceUrl: `https://www.douyin.com/video/${id}`,
+    description: rd?.desc || domDesc,
+    tags: rd?.tags ?? [],
     stats,
     durationSeconds,
-    videoUrl,
-    thumbUrl,
+    videoUrl: "", // để background dùng URL sniff (theo đúng video đang phát)
+    thumbUrl: rd?.cover || domCover(active),
   };
 }
 
-// ── Nút "＋Q" trên từng video ────────────────────────────────────
+// ── Nút ＋Q trên container video active ──────────────────────────
 
-const BTN_CLASS = "duoyin-ingest-btn";
-let activeButton: HTMLButtonElement | null = null;
+const BTN_ID = "duoyin-ingest-btn";
+type BtnState = "idle" | "busy" | "ok" | "err";
+const stateById = new Map<string, { state: BtnState; tip: string }>();
 
-function setButtonState(btn: HTMLButtonElement, state: "idle" | "busy" | "ok" | "err", tip?: string): void {
-  const map = { idle: "＋Q", busy: "⏳", ok: "✓", err: "✗" } as const;
-  btn.textContent = map[state];
-  btn.title = tip ?? "Gửi video này vào queue";
+function paint(btn: HTMLButtonElement, state: BtnState, tip: string): void {
+  const label = { idle: "＋ Queue", busy: "⏳ …", ok: "✓ Đã thêm", err: "✗ Lỗi" }[state];
+  btn.textContent = label;
+  btn.title = tip;
   btn.style.background = state === "err" ? "#c0392b" : state === "ok" ? "#0E7D6B" : "#D92B57";
+  btn.disabled = state === "busy";
+  btn.style.cursor = state === "busy" ? "default" : "pointer";
 }
 
-function makeButton(video: HTMLVideoElement): HTMLButtonElement {
-  const btn = document.createElement("button");
-  btn.className = BTN_CLASS;
-  setButtonState(btn, "idle");
-  Object.assign(btn.style, {
-    position: "absolute",
-    top: "12px",
-    right: "12px",
-    zIndex: "99999",
-    width: "44px",
-    height: "30px",
-    border: "none",
-    borderRadius: "15px",
-    color: "#fff",
-    fontSize: "13px",
-    fontWeight: "700",
-    cursor: "pointer",
-    opacity: "0.85",
-    fontFamily: "system-ui, sans-serif",
-  } satisfies Partial<CSSStyleDeclaration>);
+function ensureButton(): void {
+  const active = activeContainer();
+  const id = modalId();
+  if (!active || !id) return;
 
-  btn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    activeButton = btn;
-    setButtonState(btn, "busy", "Đang gửi vào queue…");
-    try {
-      const page = extractPage(video);
-      const req: IngestRequest = { kind: "ingest", page };
-      const res = (await chrome.runtime.sendMessage(req)) as { ok: boolean; error?: string };
-      if (!res?.ok) throw new Error(res?.error ?? "Ingest thất bại");
-      setButtonState(btn, "ok", "Đã vào queue");
-    } catch (err) {
-      setButtonState(btn, "err", err instanceof Error ? err.message : String(err));
-    }
-  });
-  return btn;
-}
+  let btn = active.querySelector<HTMLButtonElement>(`#${BTN_ID}`);
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.id = BTN_ID;
+    Object.assign(btn.style, {
+      position: "absolute", top: "16px", left: "16px", zIndex: "9999",
+      minWidth: "104px", height: "34px", padding: "0 14px",
+      border: "none", borderRadius: "17px", color: "#fff",
+      fontSize: "13px", fontWeight: "700", fontFamily: "system-ui, sans-serif",
+      boxShadow: "0 2px 8px rgba(0,0,0,.3)", opacity: "0.95",
+    } satisfies Partial<CSSStyleDeclaration>);
+    if (getComputedStyle(active).position === "static") (active as HTMLElement).style.position = "relative";
+    active.appendChild(btn);
 
-function injectButtons(): void {
-  document.querySelectorAll<HTMLVideoElement>("video").forEach((video) => {
-    const host = video.parentElement;
-    if (!host || host.querySelector(`.${BTN_CLASS}`)) return;
-    if (getComputedStyle(host).position === "static") host.style.position = "relative";
-    host.appendChild(makeButton(video));
-  });
-}
-
-injectButtons();
-new MutationObserver(() => injectButtons()).observe(document.documentElement, {
-  childList: true,
-  subtree: true,
-});
-
-// Tiến độ từ background → cập nhật nút đang xử lý
-chrome.runtime.onMessage.addListener((msg: ProgressEvent) => {
-  if (msg.kind !== "progress" || !activeButton) return;
-  if (msg.error) setButtonState(activeButton, "err", msg.error);
-  else if (msg.done) setButtonState(activeButton, "ok", msg.step);
-  else setButtonState(activeButton, "busy", msg.step);
-});
-
-// ── API cho popup ────────────────────────────────────────────────
-
-chrome.runtime.onMessage.addListener((msg: ExtractRequest, _sender, sendResponse) => {
-  if (msg.kind !== "extract") return;
-  try {
-    const res: ExtractResponse = { ok: true, page: extractPage() };
-    sendResponse(res);
-  } catch (e) {
-    const res: ExtractResponse = { ok: false, error: e instanceof Error ? e.message : String(e) };
-    sendResponse(res);
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const curId = modalId();
+      if (!curId) return;
+      if (stateById.get(curId)?.state === "busy") return; // chống double-click
+      stateById.set(curId, { state: "busy", tip: "Đang gửi…" });
+      paint(btn!, "busy", "Đang gửi…");
+      try {
+        const page = extractActive();
+        if (!page) throw new Error("Không đọc được video active");
+        const res = (await chrome.runtime.sendMessage({ kind: "ingest", page } as IngestRequest)) as { ok: boolean; error?: string };
+        if (!res?.ok) throw new Error(res?.error ?? "Ingest thất bại");
+        stateById.set(curId, { state: "ok", tip: "Đã vào queue" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        stateById.set(curId, { state: "err", tip: msg });
+      }
+      // chỉ cập nhật nếu vẫn đang ở đúng video đó
+      if (modalId() === curId) applyState(btn!);
+    });
   }
-  return true;
+  applyState(btn);
+}
+
+function applyState(btn: HTMLButtonElement): void {
+  const id = modalId();
+  const s = id ? stateById.get(id) : undefined;
+  paint(btn, s?.state ?? "idle", s?.tip ?? "Gửi video này vào queue");
+}
+
+function observeActiveVideo(): void {
+  ensureButton();
+  const mo = new MutationObserver(() => ensureButton());
+  mo.observe(document.documentElement, { childList: true, subtree: true });
+  // URL đổi khi swipe (modal_id) → cập nhật trạng thái nút theo video mới
+  let lastId = modalId();
+  setInterval(() => {
+    const now = modalId();
+    if (now !== lastId) {
+      lastId = now;
+      const btn = document.querySelector<HTMLButtonElement>(`#${BTN_ID}`);
+      if (btn) applyState(btn);
+    }
+  }, 500);
+}
+
+// Tiến độ từ background → cập nhật nút của đúng video
+chrome.runtime.onMessage.addListener((msg: ProgressEvent) => {
+  if (msg.kind !== "progress") return;
+  const id = modalId();
+  if (!id) return;
+  const prev = stateById.get(id);
+  if (msg.error) stateById.set(id, { state: "err", tip: msg.error });
+  else if (msg.done) stateById.set(id, { state: "ok", tip: msg.step });
+  else if (prev?.state === "busy") stateById.set(id, { state: "busy", tip: msg.step });
+  const btn = document.querySelector<HTMLButtonElement>(`#${BTN_ID}`);
+  if (btn) applyState(btn);
 });
