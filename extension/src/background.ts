@@ -66,6 +66,17 @@ function progress(step: string, done = false, error?: string): void {
   });
 }
 
+/** Douyin trả cover dạng WebP là chính; đặt đuôi khớp nội dung thật. */
+function thumbExt(mime: string): string {
+  const map: Record<string, string> = {
+    "image/webp": "webp",
+    "image/png": "png",
+    "image/avif": "avif",
+    "image/jpeg": "jpg",
+  };
+  return map[mime.split(";")[0].trim()] ?? "jpg";
+}
+
 async function fetchBlob(url: string, referer: string): Promise<Blob> {
   // fetch từ SW mang cookie của site nhờ host_permissions + credentials include
   const res = await fetch(url, { credentials: "include", headers: { Referer: referer } as HeadersInit });
@@ -101,7 +112,8 @@ async function runIngest(req: IngestRequest, tabId: number): Promise<void> {
     }
   }
 
-  const meta = buildMeta(page, new Date(), thumbBlob !== null);
+  const thumbName = thumbBlob ? `thumb.${thumbExt(thumbBlob.type)}` : null;
+  const meta = buildMeta(page, new Date(), thumbName);
 
   await withFreshToken(async (token) => {
     progress(`Tạo folder inbox/${meta.id}/ trên Drive…`);
@@ -110,9 +122,10 @@ async function runIngest(req: IngestRequest, tabId: number): Promise<void> {
     progress(`Upload video.mp4 (${(videoBlob.size / 1e6).toFixed(1)} MB)…`);
     await uploadVideo(token, folderId, "video.mp4", videoBlob);
 
-    if (thumbBlob) {
-      progress("Upload thumb.jpg…");
-      await uploadSmall(token, folderId, "thumb.jpg", "image/jpeg", thumbBlob);
+    if (thumbBlob && thumbName) {
+      // Douyin trả WebP là chính — dùng đúng mime/đuôi thay vì hardcode .jpg
+      progress(`Upload ${thumbName}…`);
+      await uploadSmall(token, folderId, thumbName, thumbBlob.type || "image/jpeg", thumbBlob);
     }
 
     progress("Upload meta.json…");

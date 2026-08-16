@@ -30,20 +30,27 @@ describe("sanitizeId", () => {
 describe("buildMeta", () => {
   const at = new Date("2026-08-16T12:00:00Z");
   it("đúng schema v1.0, có thumbnail", () => {
-    const meta = buildMeta(page, at, true);
+    const meta = buildMeta(page, at, "thumb.jpg");
     expect(meta.schema_version).toBe("1.0");
     expect(meta.id).toBe("dy-7301234567890123456");
     expect(meta.captured_at).toBe("2026-08-16T12:00:00.000Z");
     expect(meta.files).toEqual({ video: "video.mp4", thumbnail: "thumb.jpg" });
   });
   it("không thumbnail thì files chỉ có video", () => {
-    expect(buildMeta(page, at, false).files).toEqual({ video: "video.mp4" });
+    expect(buildMeta(page, at, null).files).toEqual({ video: "video.mp4" });
+  });
+
+  it("ghi đúng tên file thumbnail thật (WebP)", () => {
+    expect(buildMeta(page, at, "thumb.webp").files).toEqual({
+      video: "video.mp4",
+      thumbnail: "thumb.webp",
+    });
   });
 });
 
 describe("sheetRow", () => {
   it("đúng 13 cột A→M theo hợp đồng", () => {
-    const meta = buildMeta(page, new Date(), true);
+    const meta = buildMeta(page, new Date(), "thumb.jpg");
     const row = sheetRow(meta, "https://drive.google.com/drive/folders/xyz");
     expect(row).toHaveLength(13);
     expect(row[0]).toBe(meta.id); // A id

@@ -38,7 +38,8 @@ export function sanitizeId(raw: string): string {
   return cleaned || `v-${Date.now()}`;
 }
 
-export function buildMeta(page: CapturedPage, capturedAt: Date, hasThumb: boolean): IngestMeta {
+/** thumbName: tên file thumbnail thật (vd "thumb.webp"), null nếu không tải được. */
+export function buildMeta(page: CapturedPage, capturedAt: Date, thumbName: string | null): IngestMeta {
   return {
     schema_version: SCHEMA_VERSION,
     id: sanitizeId(page.rawId),
@@ -50,7 +51,7 @@ export function buildMeta(page: CapturedPage, capturedAt: Date, hasThumb: boolea
     stats: page.stats,
     duration_seconds: page.durationSeconds,
     captured_at: capturedAt.toISOString(),
-    files: hasThumb ? { video: "video.mp4", thumbnail: "thumb.jpg" } : { video: "video.mp4" },
+    files: thumbName ? { video: "video.mp4", thumbnail: thumbName } : { video: "video.mp4" },
   };
 }
 
