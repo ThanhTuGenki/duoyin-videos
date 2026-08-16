@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Duoyin Ingest",
+  "version": "0.1.0",
+  "description": "1-click: bắt video + metadata từ trang đang xem, đẩy lên Google Drive + Sheet theo hợp đồng ingest",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxY2U46QYABqhl/X/X53zTgL2iyuO67TjqEOWclL26wtDAf00CK/uX6NIcIa/Wi/l2pVXkLgSWxkh5C+63WarLvebZ5nTkzvgCXapTHUoIdtTVjVlLOYsGvTzr9CgA6aKEEYwNcRKnVCyvj/AKN8kbAo8GFqwm0MBPs/xE8iRlP+wX4lkgr/6+sHGdzP5Zs764meBymTu34tjRnwJjW7hZFGjEuQXOoYzi7w/tQkcCoMxC28PTSge5LvYRfAXlwcVZpzJ7SMqR0LF3tNGZgPnUp3aY1oytV/ylb9dZ4Mmd6+U6+KxHd0g1zb20tTJ2JbxTATiCnbvXmh/gNbLCad+hwIDAQAB",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Gửi video vào queue"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.douyin.com/*", "https://www.iesdouyin.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "permissions": ["identity", "storage", "activeTab", "webRequest", "notifications"],
+  "host_permissions": ["<all_urls>"],
+  "oauth2": {
+    "client_id": "PASTE_OAUTH_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/spreadsheets"
+    ]
+  }
+}

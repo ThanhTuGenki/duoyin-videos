@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: system-ui, sans-serif; width: 320px; margin: 0; padding: 14px; }
+    h1 { font-size: 14px; margin: 0 0 10px; }
+    button {
+      width: 100%; padding: 10px; font-size: 14px; font-weight: 600;
+      border: none; border-radius: 8px; background: #D92B57; color: #fff; cursor: pointer;
+    }
+    button:disabled { background: #bbb; cursor: default; }
+    #log { margin-top: 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; color: #444; max-height: 220px; overflow-y: auto; }
+    .err { color: #c0392b; }
+    a { color: #888; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>Duoyin Ingest</h1>
+  <button id="go">Gửi video này vào queue</button>
+  <div id="log"></div>
+  <p><a href="#" id="opts">Cài đặt (folder / sheet)</a></p>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
