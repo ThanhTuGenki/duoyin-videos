@@ -10,7 +10,15 @@ Worker chỉ đọc hợp đồng này, không biết nguồn video. Extension (
 | `inbox/` — video vào | https://drive.google.com/drive/folders/1PbeSJv39pGnu0yLxqZpBkTZfpaUcRgLj |
 | `output/` — thành phẩm ra | https://drive.google.com/drive/folders/1GRQTbjnEsjGa_VSD3z6ZCa3_LvVlyPwD |
 | Folder video mẫu `inbox/sample-001/` | https://drive.google.com/drive/folders/1MhEPLa7JcyEjOYKuN_B_97OR9zWCcVXL |
-| Sheet queue `duoyin-videos-queue` | https://docs.google.com/spreadsheets/d/1yrp2Jxp-Uj5WD5RIJMzXWkQaTe7TwHdNmWnmJuqPmTw/edit |
+| Sheet queue `duoyin-videos-queue` (đang dùng) | https://docs.google.com/spreadsheets/d/1yrp2Jxp-Uj5WD5RIJMzXWkQaTe7TwHdNmWnmJuqPmTw/edit |
+| **Sheet MẪU** — bấm link này để tự tạo bản sao | https://docs.google.com/spreadsheets/d/1I263JkylKlgeglImqQNEF6F-loDozMFpOgTKuOY9WW4/copy |
+
+Sheet mẫu đã có sẵn: header đậm + freeze, dropdown cho `voice`/`translation_mode`/`status`, màu theo trạng thái, dòng ERROR ửng đỏ, sọc xen kẽ, bộ lọc, chú thích hover trên từng tiêu đề. Dùng cho người mới: copy về, dán ID mới vào Options của extension là chạy.
+
+Trang trí lại bất cứ lúc nào (không cần nút trong extension):
+```bash
+cd extension && node scripts/format-sheet.mjs <spreadsheetId> [--clear-data]
+```
 
 ## Cấu trúc folder Drive cho mỗi video
 
