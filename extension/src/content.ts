@@ -95,7 +95,8 @@ function activeContainer(): Element | null {
   return document.querySelector('[data-e2e="feed-active-video"]');
 }
 
-export function extractActive(): CapturedPage | null {
+// Không export: content script là classic script, mọi export sẽ làm hỏng cả file.
+function extractActive(): CapturedPage | null {
   const id = modalId();
   const active = activeContainer();
   if (!id || !active) return null;

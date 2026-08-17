@@ -1,21 +1,26 @@
 import * as esbuild from "esbuild";
-import { cpSync, mkdirSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync } from "node:fs";
 
 const watch = process.argv.includes("--watch");
 
-const options = {
-  entryPoints: [
-    "src/background.ts",
-    "src/content.ts",
-    "src/popup.ts",
-    "src/options.ts",
-  ],
+const shared = {
   bundle: true,
-  format: "esm",
   target: "chrome120",
   outdir: "dist",
   sourcemap: "inline",
   logLevel: "info",
+};
+
+// Content script chạy như classic script — KHÔNG được chứa import/export,
+// nếu không Chrome báo SyntaxError và cả script không chạy (mất nút ＋Q).
+const contentConfig = { ...shared, entryPoints: ["src/content.ts"], format: "iife" };
+
+// Service worker (manifest "type": "module") và popup/options (<script type="module">)
+// đều nạp dưới dạng ES module nên giữ format esm.
+const moduleConfig = {
+  ...shared,
+  entryPoints: ["src/background.ts", "src/popup.ts", "src/options.ts"],
+  format: "esm",
 };
 
 function copyStatic() {
@@ -26,10 +31,24 @@ function copyStatic() {
 }
 
 if (watch) {
-  const ctx = await esbuild.context(options);
+  const ctxs = await Promise.all([esbuild.context(contentConfig), esbuild.context(moduleConfig)]);
   copyStatic();
-  await ctx.watch();
+  await Promise.all(ctxs.map((c) => c.watch()));
 } else {
   copyStatic();
-  await esbuild.build(options);
+  await Promise.all([esbuild.build(contentConfig), esbuild.build(moduleConfig)]);
+  assertContentIsClassic();
+}
+
+/** Chốt chặn: một `export` lọt vào content.js là cả script chết câm (mất nút ＋Q). */
+function assertContentIsClassic() {
+  const code = readFileSync("dist/content.js", "utf8").split("//# sourceMappingURL=")[0];
+  const bad = code.match(/^\s*(export|import)\s/m);
+  if (bad) {
+    throw new Error(
+      `dist/content.js chứa "${bad[1]}" ở cấp cao nhất — content script là classic script, ` +
+        `Chrome sẽ báo SyntaxError và không chạy gì cả. Bỏ từ khoá export/import trong src/content.ts.`,
+    );
+  }
+  console.log("✓ content.js là classic script (không có export/import)");
 }
