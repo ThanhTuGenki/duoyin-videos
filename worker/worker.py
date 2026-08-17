@@ -19,8 +19,10 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,6 +47,17 @@ VSR_PY = os.environ.get("VSR_PY", f"{VSR_DIR}/venv_vsr/bin/python")
 WORK_DIR = Path(os.environ.get("WORK_DIR", "/root/jobs"))
 VOICE_DIR = Path(__file__).resolve().parent / "assets" / "voice"
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
+# Số video dub đồng thời. TTS vẫn xếp hàng trên GPU, nhưng tải/dịch/mux/upload
+# (~75s trong 155s mỗi job, đo trên 3090) chồng lên nhau được → ~1.6-2x throughput.
+DUB_CONCURRENCY = int(os.environ.get("DUB_CONCURRENCY", "3"))
+# Cách xử lý câu dịch dài hơn khung thời gian gốc. Mặc định của VoiceStudio là
+# "concise" — KHÔNG nén audio nhưng overflow thì CẮT CỨNG ở biên slot, đúng
+# triệu chứng "dừng ngang ở từ cuối cùng" (user báo 17.08).
+# Chỉ dùng được concise/strict_slot: smart_fit và stretch_video đổi timeline
+# VIDEO, mà ta ghép audio vào video GỐC nên sẽ lệch tiếng hình.
+TIMING_STRATEGY = os.environ.get("TIMING_STRATEGY", "concise")
+# Khoản dư (giây) được thấm vào khoảng lặng trước khi hard-trim ra tay.
+OVERFLOW_BUDGET_S = float(os.environ.get("OVERFLOW_BUDGET_S", "1.5"))
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -82,13 +95,18 @@ def sheet_client():
     return gspread.service_account(filename=SA_JSON).open_by_key(SHEET_ID).sheet1
 
 
+# gspread không thread-safe; nhiều job chạy song song nên serialize mọi ghi Sheet
+_sheet_lock = threading.Lock()
+
+
 def sheet_update(ws, row: int, updates: dict[str, str]) -> None:
     """Ghi 1 loạt ô trên cùng dòng theo tên cột hợp đồng."""
     cells = [
         {"range": f"{chr(ord('A') + COL_INDEX[col])}{row}", "values": [[value]]}
         for col, value in updates.items()
     ]
-    ws.batch_update(cells, value_input_option="RAW")
+    with _sheet_lock:
+        ws.batch_update(cells, value_input_option="RAW")
 
 
 def set_status(ws, job: Job, status: str, **extra: str) -> None:
@@ -228,7 +246,17 @@ def vs_translate(vs_job: str, segments: list[dict], quality: str) -> list[dict]:
         if not r.ok:
             tried.append(f"{q}: HTTP {r.status_code} {r.text[:120]}")
             continue
-        translated, unchanged = parse_translated(r.json(), segments)
+        data = r.json()
+        # Đo mức lố khung: rate_ratio > 1 nghĩa câu Việt dài hơn slot gốc.
+        # Đây là thước đo trực tiếp cho triệu chứng "cắt ngang từ cuối".
+        rows_raw = data.get("translated") if isinstance(data, dict) else None
+        if isinstance(rows_raw, list) and rows_raw:
+            ratios = [float(x.get("rate_ratio") or 0) for x in rows_raw if isinstance(x, dict)]
+            over = [x for x in ratios if x > 1.0]
+            if ratios:
+                log(f"  fit: {len(over)}/{len(ratios)} câu lố khung"
+                    f" · rate_ratio tối đa {max(ratios):.2f} · quality={data.get('quality_used')}")
+        translated, unchanged = parse_translated(data, segments)
         if unchanged >= max(1, len(segments) // 2):
             tried.append(f"{q}: {unchanged}/{len(segments)} câu không đổi (chưa dịch?)")
             continue
@@ -264,8 +292,11 @@ def vs_dub(video: Path, quality: str, profile_id: str) -> bytes:
          "text": s.get("text", ""), "profile_id": profile_id}
         for s in segments
     ]
-    r = requests.post(f"{VS_API}/dub/generate/{vs_job}", timeout=7200,
-                      json={"segments": gen_segments, "language": "vi", "language_code": "vi"})
+    r = requests.post(f"{VS_API}/dub/generate/{vs_job}", timeout=7200, json={
+        "segments": gen_segments, "language": "vi", "language_code": "vi",
+        "timing_strategy": TIMING_STRATEGY,
+        "overflow_budget_s": OVERFLOW_BUDGET_S,
+    })
     if not r.ok:
         raise JobError(f"Generate thất bại HTTP {r.status_code}: {r.text[:200]}")
     task = r.json().get("task_id")
@@ -437,9 +468,23 @@ def main() -> None:
 
         if jobs:
             idle_reported = False
-            log(f"{len(jobs)} job chờ stage {args.stage}: {[j.id for j in jobs[:8]]}…")
-            for job in jobs:
-                process(ws, job)
+            # Song song chỉ ở stage dub: TTS xếp hàng trên GPU nhưng tải/dịch/
+            # mux/upload chồng nhau được. Stage vsr chạy tuần tự — VSR ăn GPU
+            # nặng và liên tục, chạy song song chỉ tranh nhau chậm hơn.
+            workers = DUB_CONCURRENCY if args.stage == "dub" else 1
+            log(f"{len(jobs)} job chờ stage {args.stage} (song song {workers}): "
+                f"{[j.id for j in jobs[:6]]}…")
+            if workers <= 1:
+                for job in jobs:
+                    process(ws, job)
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {pool.submit(process, ws, job): job for job in jobs}
+                    for fut in as_completed(futures):
+                        try:
+                            fut.result()
+                        except Exception as e:  # process() đã tự bắt; đây là chốt cuối
+                            log(f"[{futures[fut].id}] thoát bất thường: {e}")
         elif not idle_reported:
             log("Queue rỗng — chờ job mới")
             idle_reported = True
