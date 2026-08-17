@@ -30,8 +30,9 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from wcontract import (  # noqa: E402
     COL_INDEX, STATUS_DONE, STATUS_DOWNLOADING, STATUS_ERROR, STATUS_MUXING,
-    STATUS_PROCESSING, STATUS_UPLOADING, Job, audio_ext, has_enough_speech,
-    mux_command, parse_translated, pick_new_jobs, vsr_command,
+    STATUS_NEW, STATUS_PROCESSING, STATUS_UPLOADING, Job, audio_ext,
+    has_enough_speech, mux_command, parse_translated, pick_new_jobs,
+    pick_stale_jobs, reclaim_decision, vsr_command,
 )
 
 # ── Cấu hình (env override được) ─────────────────────────────────
@@ -357,6 +358,24 @@ def main() -> None:
     health_check()
     ws = sheet_client()
     log(f"Worker sẵn sàng — poll {POLL_SECONDS}s, sheet {SHEET_ID[:12]}…")
+
+    # Đòi lại job kẹt ở trạng thái đang-xử-lý từ lần chạy trước (crash/mất
+    # mạng/container chết giữa chừng). Chạy lại từ đầu là an toàn (mọi bước
+    # idempotent); đếm số lần trong cột error, quá 2 lần thì dừng ở ERROR
+    # để job 'độc' không đốt tiền GPU vô hạn.
+    try:
+        stale = pick_stale_jobs(ws.get_all_values())
+        for job in stale:
+            status, err = reclaim_decision(job.raw[COL_INDEX["error"]])
+            sheet_update(ws, job.row_number, {
+                "status": status, "error": err,
+                "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            })
+            log(f"[{job.id}] dở dang từ lần trước → {status} ({err[:50]})")
+        if stale:
+            notify(f"♻️ Đòi lại {len(stale)} job dở dang sau khởi động lại")
+    except Exception as e:
+        log(f"Đòi lại job dở dang lỗi (bỏ qua): {e}")
 
     idle_reported = False
     while True:

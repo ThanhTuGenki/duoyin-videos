@@ -142,3 +142,50 @@ def parse_translated(data, originals: list[dict]) -> tuple[list[dict], int]:
             unchanged += 1
         out.append({**seg, "text": text})
     return out, unchanged
+
+
+# ── Đòi lại job dở dang khi worker khởi động lại ─────────────────
+
+IN_PROGRESS_STATUSES = {STATUS_DOWNLOADING, STATUS_PROCESSING, STATUS_MUXING, STATUS_UPLOADING}
+MAX_AUTO_RETRIES = 2
+_RETRY_PREFIX = "[auto-retry "
+
+
+def retry_count(error_text: str) -> int:
+    """Đọc số lần đã tự chạy lại từ cột error (dạng '[auto-retry N] ...')."""
+    text = (error_text or "").strip()
+    if not text.startswith(_RETRY_PREFIX):
+        return 0
+    try:
+        return int(text[len(_RETRY_PREFIX):].split("]", 1)[0])
+    except ValueError:
+        return 0
+
+
+def reclaim_decision(error_text: str) -> tuple[str, str]:
+    """Quyết định cho 1 dòng đang dở khi worker khởi động lại.
+
+    Chỉ gọi lúc KHỞI ĐỘNG: hệ chỉ có 1 worker nên dòng in-progress lúc đó
+    chắc chắn là xác chết của lần chạy trước (crash/mất mạng/container chết).
+    Chạy lại từ đầu an toàn: rclone idempotent, VoiceStudio cache prep theo
+    file, VSR/mux ghi đè. Nhưng phải đếm số lần — job 'độc' (video hỏng làm
+    sập worker) mà retry vô hạn thì đốt tiền GPU không hồi kết.
+
+    Trả (status_mới, error_mới).
+    """
+    n = retry_count(error_text)
+    if n >= MAX_AUTO_RETRIES:
+        return STATUS_ERROR, (
+            f"{_RETRY_PREFIX}{n}] Quá {MAX_AUTO_RETRIES} lần tự chạy lại sau crash — "
+            "cần xem tay. Muốn thử tiếp: xoá cột error rồi sửa status về NEW.")
+    return STATUS_NEW, f"{_RETRY_PREFIX}{n + 1}] tự chạy lại sau khi worker khởi động lại"
+
+
+def pick_stale_jobs(rows: list[list[str]]) -> list[Job]:
+    """Các dòng kẹt ở trạng thái đang-xử-lý (để đòi lại lúc khởi động)."""
+    stale = []
+    for i, row in enumerate(rows[1:], start=2):
+        padded = list(row) + [""] * (len(COLUMNS) - len(row))
+        if padded[COL_INDEX["status"]].strip().upper() in IN_PROGRESS_STATUSES:
+            stale.append(parse_row(i, row))
+    return stale

@@ -128,3 +128,40 @@ class TestParseTranslated:
     def test_cau_truc_la_bao_loi(self):
         with pytest.raises(ValueError):
             parse_translated({"weird": 1}, self.ORIG)
+
+
+class TestReclaim:
+    """Đòi lại job dở dang sau crash — worker restart phải tự chạy lại."""
+
+    def test_pick_stale_bat_dung_cac_trang_thai_dang_do(self):
+        from wcontract import pick_stale_jobs
+        rows = [HEADER,
+                make_row(id="dy-a", status="PROCESSING"),
+                make_row(id="dy-b", status="DONE"),
+                make_row(id="dy-c", status="UPLOADING"),
+                make_row(id="dy-d", status="NEW")]
+        assert [j.id for j in pick_stale_jobs(rows)] == ["dy-a", "dy-c"]
+
+    def test_lan_dau_crash_ve_new_voi_dem_1(self):
+        from wcontract import reclaim_decision
+        status, err = reclaim_decision("")
+        assert status == "NEW"
+        assert err.startswith("[auto-retry 1]")
+
+    def test_dem_tang_dan_qua_cac_lan(self):
+        from wcontract import reclaim_decision
+        _, err1 = reclaim_decision("")
+        status2, err2 = reclaim_decision(err1)
+        assert status2 == "NEW" and err2.startswith("[auto-retry 2]")
+
+    def test_qua_2_lan_thi_dung_han_o_error(self):
+        from wcontract import reclaim_decision
+        status, err = reclaim_decision("[auto-retry 2] tự chạy lại sau khi worker khởi động lại")
+        assert status == "ERROR"
+        assert "Quá 2 lần" in err
+
+    def test_error_cu_khong_phai_retry_van_dem_tu_0(self):
+        from wcontract import retry_count
+        assert retry_count("Video không có lời thoại") == 0
+        assert retry_count("") == 0
+        assert retry_count("[auto-retry rác]") == 0
