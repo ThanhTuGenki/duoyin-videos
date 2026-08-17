@@ -176,6 +176,34 @@ Số đo thật (RTX 3090, video ~110-120s):
 
 `health_check` chỉ kiểm thứ stage đó cần — VSR chưa dựng xong không chặn stage dub.
 
+### VSR: BẮT BUỘC đặt `VSR_SUB_AREA` khi paddle chạy CPU (đo 17.08)
+
+```bash
+VSR_SUB_AREA="860,1010,100,1820" bash /root/start_worker.sh vsr   # 1080p dọc
+```
+
+Không đặt thì VSR tự dò vùng sub bằng PaddleOCR — và **bản CPU dò không ra
+gì**, nên nó chỉ encode lại, phụ đề còn nguyên. Nguy hiểm là VSR vẫn **thoát
+mã 0** và tạo file hợp lệ, worker báo `DONE` giả. Đã dính đúng ca này:
+
+| | Không `-c` | Có `-c 860 1010 100 1820` |
+|---|---|---|
+| GPU trong lúc chạy | **2%** (không hề inpaint) | **95-100%** |
+| Thời gian (video 122s) | 197s | 248s |
+| Frame giây 40 | còn nguyên `外边再扩建成这么大` | **chữ mất sạch** |
+
+GPU 2% là dấu hiệu nhận biết nhanh nhất: STTN chạy thì GPU phải tải nặng.
+Nay `vsr_remove_subs` ném lỗi nếu output VSR không nhắc tới vùng sub nào dò
+được, không im lặng báo DONE nữa.
+
+Toạ độ là **pixel**, thứ tự `ymin,ymax,xmin,xmax`, và `-c` của VSR khai báo
+`nargs=4` nên `vsr_command` tách thành 4 tham số rời. Video Douyin dọc
+1920×1080 thì sub nằm ở dải `y≈860-1010`; đổi độ phân giải là phải đo lại
+(trích 1 frame, xem sub ở đâu).
+
+Muốn dò tự động thì cần **paddle GPU** — chỉ có trên mirror Trung Quốc, tải
+từ datacenter này rất hay treo (xem `PADDLE_MODE` trong setup.sh).
+
 ### Vì sao `smart_fit` chứ không phải `concise`/`stretch_video` (đo 17.08)
 
 Vấn đề user báo: *"nó hay bị dừng ngang ở từ cuối cùng không được tự nhiên"*.
