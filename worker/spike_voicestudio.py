@@ -121,6 +121,19 @@ def create_voice(name: str) -> str | None:
     return pid
 
 
+def audio_ext(blob: bytes) -> str:
+    """Đuôi file theo magic bytes, không tin vào tên endpoint."""
+    if blob[:4] == b"RIFF" and blob[8:12] == b"WAVE":
+        return "wav"
+    if blob[:3] == b"ID3" or blob[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "mp3"
+    if blob[:4] == b"OggS":
+        return "ogg"
+    if blob[:4] == b"fLaC":
+        return "flac"
+    return "bin"
+
+
 def install_model(repo_id: str) -> None:
     """Cài model qua Model Catalogue (tải chạy nền phía máy chủ)."""
     log(f"Cài model {repo_id}")
@@ -264,7 +277,9 @@ def dub(video: Path, profile_id: str | None, target_lang: str) -> None:
     r = requests.get(f"{API}/dub/download-audio/{job}", timeout=1800)
     if r.ok and len(r.content) > 1000:
         OUT.mkdir(parents=True, exist_ok=True)
-        dest = OUT / f"dubbed_{target_lang}.mp3"
+        # Endpoint tên là download-audio nhưng thực tế trả WAV. Đặt đuôi theo
+        # nội dung thật, vì đuôi sai làm nhiều trình phát từ chối mở file.
+        dest = OUT / f"dubbed_{target_lang}.{audio_ext(r.content)}"
         dest.write_bytes(r.content)
         ok(f"ĐÃ LƯU {dest} ({len(r.content) / 1e6:.1f} MB) ← nghe file này để chấm chất lượng giọng")
     else:
