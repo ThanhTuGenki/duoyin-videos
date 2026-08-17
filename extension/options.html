@@ -18,6 +18,12 @@
   <input id="inboxFolderId">
   <label for="spreadsheetId">Spreadsheet ID (queue)</label>
   <input id="spreadsheetId">
+  <h2 style="font-size:15px;margin-top:28px">Trình duyệt không phải Chrome (Cốc Cốc, Brave, Edge…)</h2>
+  <p class="hint">getAuthToken chỉ có trên Chrome thật. Với trình duyệt khác, tạo OAuth client loại <b>Web application</b> (redirect URI: <code>https://bbhcmfeedghfopbijnbjnhdfenfdinli.chromiumapp.org/</code>) rồi điền vào đây. Dùng Chrome thật thì bỏ trống.</p>
+  <label for="webClientId">Web client ID</label>
+  <input id="webClientId" placeholder="xxxx.apps.googleusercontent.com">
+  <label for="webClientSecret">Web client secret</label>
+  <input id="webClientSecret" type="password" placeholder="GOCSPX-…">
   <button id="save">Lưu</button><span id="status"></span>
   <script type="module" src="options.js"></script>
 </body>

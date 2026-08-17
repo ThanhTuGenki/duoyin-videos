@@ -1,12 +1,18 @@
 export interface ExtensionConfig {
   inboxFolderId: string;
   spreadsheetId: string;
+  /** OAuth client loại Web application — chỉ cần cho trình duyệt KHÔNG phải
+   *  Chrome thật (Cốc Cốc, Brave, Edge…), nơi getAuthToken bị chặn. */
+  webClientId: string;
+  webClientSecret: string;
 }
 
 // Nơi lưu đang dùng (contract/sheet-columns.md)
 export const DEFAULT_CONFIG: ExtensionConfig = {
   inboxFolderId: "1PbeSJv39pGnu0yLxqZpBkTZfpaUcRgLj",
   spreadsheetId: "1tLx0SQUqWQ1q7qGpkdcH0ATMYGdCSPA9AUMqLRHyFRY",
+  webClientId: "",
+  webClientSecret: "",
 };
 
 /** Sheet đã bỏ/đã xoá — tự chuyển về mặc định thay vì để người dùng gặp lỗi 404 khó hiểu. */
@@ -21,6 +27,8 @@ export async function loadConfig(): Promise<ExtensionConfig> {
   return {
     inboxFolderId: stored.inboxFolderId || DEFAULT_CONFIG.inboxFolderId,
     spreadsheetId,
+    webClientId: (stored.webClientId || "").trim(),
+    webClientSecret: (stored.webClientSecret || "").trim(),
   };
 }
 
