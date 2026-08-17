@@ -121,6 +121,7 @@ Cơ chế 4 lớp (đã cài vào setup.sh, worker Phase 4 dùng lớp 3-4):
 1. **Backup**: token nằm ở `secrets/cli-proxy-api/` trên máy local (gitignore).
    Thuê máy mới → scp thư mục `secrets/` lên `/root/secrets/` → `setup.sh` tự
    khôi phục vào `/root/.cli-proxy-api/` — **không phải login lại**.
+   Bản sao lưu ngoài máy: xem "Khôi phục secrets khi đổi máy" bên dưới.
 2. **Tự refresh**: proxy đang chạy thì token không bao giờ hết hạn giữa chừng.
 3. **Health check trước mỗi phiên** (worker Phase 4): gọi `GET /v1/models` của
    proxy; lỗi/401 → báo Telegram "cần login lại Antigravity" kèm lệnh sẵn.
@@ -136,6 +137,46 @@ Lưu ý khác:
 - Bind loopback (VoiceStudio và proxy đều không có xác thực).
 - Dùng quota subscription qua proxy là vùng xám ToS — phương án thay thế:
   API key Gemini Flash trả phí, đổi mỗi `base_url`/`api_key`.
+
+## Khôi phục secrets khi đổi máy
+
+`secrets/` bị gitignore (đúng — không bao giờ commit khoá), nên **clone repo
+về máy mới là chưa chạy được**. Bản sao lưu đã mã hoá nằm trên Drive:
+
+```bash
+rclone copy tyziiu:duoyin-secrets/duoyin-secrets.tar.gz.enc /tmp/
+cd <repo> && openssl enc -d -aes-256-cbc -pbkdf2 -in /tmp/duoyin-secrets.tar.gz.enc | tar xzf -
+```
+
+Gõ mật khẩu **bằng tay**; dán nhiều dòng một lúc thì dòng sau bị nuốt vào ô
+mật khẩu (đã dính 17.08). Kiểm mà không đè `secrets/` đang dùng: thay `tar xzf -`
+bằng `tar tzf -` để chỉ liệt kê.
+
+Sau khi khôi phục: `./deploy.sh <IP> <PORT> '<PASS>'` — không phải login lại gì.
+
+Trong gói có 5 file, mất mỗi thứ tốn công khác nhau:
+
+| File | Mất thì phải |
+|---|---|
+| `sa.json` | tạo lại service account key, share lại folder Drive cho nó |
+| `rclone-user-token.json` | `rclone authorize "drive"` + đăng nhập browser |
+| `cli-proxy-api/antigravity-*.json` | login lại Antigravity qua tunnel cổng 51121 |
+| `extension-key.pem` | **nặng nhất** — extension ID đổi → redirect URI OAuth sai → sửa lại Google Cloud + cài lại extension |
+| `extension-pub.der` | sinh lại từ `.pem` |
+
+Cập nhật bản sao lưu sau khi đổi/ thêm khoá (lệnh mã hoá rồi đẩy lên, ghi đè
+file cũ):
+
+```bash
+cd <repo> && tar czf - secrets/ \
+  | openssl enc -aes-256-cbc -pbkdf2 -out /tmp/duoyin-secrets.tar.gz.enc \
+  && rclone copy /tmp/duoyin-secrets.tar.gz.enc tyziiu:duoyin-secrets/ \
+  && rm /tmp/duoyin-secrets.tar.gz.enc
+```
+
+Mã hoá chứ không để trần vì `rclone-user-token.json` cho quyền **ghi toàn bộ
+Drive** — ai đọc được file đó là ghi được Drive. Mất mật khẩu là mất luôn gói,
+không có đường khôi phục.
 
 ## Phase 4 — worker 2 giai đoạn (dub đã chạy thật 17.08)
 
