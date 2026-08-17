@@ -79,6 +79,43 @@ Lỗi đã gặp và đã xử lý sẵn trong `setup.sh`:
 - VSR thiếu `libxkbcommon0` → import PySide6 chết ngay
 - `scipy` mới cần numpy≥2 trong khi torch cu118 kéo numpy 1.x → ghim `scipy==1.13.1`
 
+## Dịch LLM qua CLIProxyAPI + Antigravity (đã kiểm chứng 17.08)
+
+Bản dịch `fast` (Google MT) thô; chế độ `cinematic` dùng LLM cho kết quả tự
+nhiên hơn hẳn. Đã chạy thật trên container qua CLIProxyAPI:
+
+```bash
+# 1. Cài (binary Go, không phụ thuộc gì)
+mkdir -p /root/cliproxy && cd /root/cliproxy
+curl -fsSL -o cpa.tar.gz https://github.com/router-for-me/CLIProxyAPI/releases/download/v7.2.135/CLIProxyAPI_7.2.135_linux_amd64.tar.gz
+tar xzf cpa.tar.gz
+printf 'host: "127.0.0.1"\nport: 8317\nauth-dir: "/root/.cli-proxy-api"\n' > config.yaml
+
+# 2. Login Antigravity MỘT LẦN (OAuth callback về cổng 51121 → cần SSH tunnel):
+#    máy local:  ssh -p <PORT> -L 51121:127.0.0.1:51121 root@<IP>
+./cli-proxy-api --config config.yaml --antigravity-login --no-browser
+# → mở URL nó in ra, đăng nhập, token lưu /root/.cli-proxy-api/*.json
+
+# 3. Chạy server
+setsid nohup ./cli-proxy-api --config config.yaml > /tmp/cliproxy.log 2>&1 &
+
+# 4. Trỏ VoiceStudio vào proxy (lưu bền qua prefs.json, restart không mất)
+curl -X PUT http://127.0.0.1:3900/api/settings/llm-endpoint \
+  -H 'Content-Type: application/json' \
+  -d '{"base_url":"http://127.0.0.1:8317/v1","model":"gemini-3.5-flash-low","api_key":"dummy"}'
+```
+
+Số đo: cinematic 25 đoạn, generate 46s, VRAM 4.453 MiB. `quality_used=cinematic`.
+
+Lưu ý:
+- **Token `/root/.cli-proxy-api/*.json` là secret** — backup như service account,
+  không commit. Mất container = login lại (1 lần, cần tunnel).
+- Bind loopback (VoiceStudio và proxy đều không có xác thực).
+- Dùng quota subscription qua proxy là vùng xám ToS — phương án thay thế:
+  API key Gemini Flash trả phí, đổi mỗi `base_url`/`api_key`.
+- Phase 4: đưa vào setup.sh + start script; worker fallback `cinematic → fast`
+  khi proxy không phản hồi.
+
 ## Phase 4 (chưa làm)
 
 Worker poll Sheet → rclone kéo video từ Drive → chạy song song VSR ∥ VoiceStudio
