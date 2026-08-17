@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,10 @@ WRITE_REMOTE = os.environ.get("RCLONE_WRITE_REMOTE", "gdrive-user")  # OAuth use
 VS_API = os.environ.get("VS_API", "http://127.0.0.1:3900")
 VSR_DIR = os.environ.get("VSR_DIR", "/root/video-subtitle-remover")
 VSR_PY = os.environ.get("VSR_PY", f"{VSR_DIR}/venv_vsr/bin/python")
+# Vùng phụ đề "ymin,ymax,xmin,xmax" (pixel). Rỗng = để VSR tự dò — nhưng
+# PaddleOCR bản CPU dò không ra (xem vsr_remove_subs), nên khi chạy CPU
+# paddle thì phải đặt tay, ví dụ VSR_SUB_AREA="880,1000,200,1720" cho 1080p.
+VSR_SUB_AREA = os.environ.get("VSR_SUB_AREA", "").strip()
 WORK_DIR = Path(os.environ.get("WORK_DIR", "/root/jobs"))
 VOICE_DIR = Path(__file__).resolve().parent / "assets" / "voice"
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
@@ -123,11 +128,13 @@ def set_status(ws, job: Job, status: str, **extra: str) -> None:
 
 # ── rclone / subprocess ──────────────────────────────────────────
 
-def run(cmd: list[str], *, cwd: str | None = None, timeout: int = 7200) -> None:
+def run(cmd: list[str], *, cwd: str | None = None, timeout: int = 7200) -> str:
+    """Chạy lệnh, trả về stdout+stderr. Lỗi → JobError kèm phần cuối output."""
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip()[-400:]
         raise JobError(f"Lệnh thất bại ({cmd[0]} rc={proc.returncode}): {tail}")
+    return (proc.stdout or "") + (proc.stderr or "")
 
 
 def rclone_download(folder_id: str, dest: Path) -> Path:
@@ -337,9 +344,25 @@ def vs_fetch_srt(vs_job: str) -> str:
 # ── Nhánh hình (VSR) ─────────────────────────────────────────────
 
 def vsr_remove_subs(video_in: Path, video_out: Path) -> None:
-    run(vsr_command(VSR_PY, str(video_in), str(video_out)), cwd=VSR_DIR, timeout=4 * 3600)
+    """Xóa hardsub. Ném JobError nếu VSR không dò được vùng sub nào.
+
+    Ca thật 17.08 22:5x: VSR thoát mã 0, tạo file 100MB hợp lệ, worker báo DONE
+    — nhưng frame vẫn còn nguyên chữ Trung. GPU chỉ 2% suốt 197s, tức STTN
+    không hề inpaint: PaddleOCR (bản CPU) không dò ra vùng sub nên VSR chỉ
+    encode lại. "Thoát mã 0" KHÔNG đủ để kết luận đã xóa sub.
+    """
+    out = run(vsr_command(VSR_PY, str(video_in), str(video_out), sub_area=VSR_SUB_AREA),
+              cwd=VSR_DIR, timeout=4 * 3600)
     if not video_out.exists() or video_out.stat().st_size < 100_000:
         raise JobError("VSR không tạo ra file kết quả hợp lệ")
+
+    tail = out.strip()[-600:]
+    if VSR_SUB_AREA:
+        log(f"  VSR vùng sub chỉ định: {VSR_SUB_AREA}")
+    elif not re.search(r"(sub_area|字幕区域|subtitle area|检测到)", out, re.I):
+        raise JobError(
+            "VSR không dò được vùng phụ đề nào — video ra vẫn còn sub. "
+            f"Đặt VSR_SUB_AREA='ymin,ymax,xmin,xmax' để chỉ định tay. Log: {tail}")
 
 
 # ── Giai đoạn A: dub (NEW → DUBBING → DUBBED) ────────────────────

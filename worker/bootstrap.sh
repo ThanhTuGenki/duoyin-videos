@@ -37,6 +37,20 @@ curl -sf -X POST http://127.0.0.1:3900/models/install -H 'Content-Type: applicat
 curl -sf -X POST http://127.0.0.1:3900/models/install -H 'Content-Type: application/json' \
   -d '{"repo_id":"k2-fsa/OmniVoice"}' >/dev/null || true
 
+# START_WORKER=0 để dựng xong mà CHƯA chạy: dùng khi muốn thử 1 video có kiểm
+# soát trước, tránh worker cuốn cả hàng đợi (105 dòng NEW) trên máy thuê ngắn.
+if [ "${START_WORKER:-1}" = "0" ]; then
+  log "5/5 Bỏ qua bật worker (START_WORKER=0)"
+  cat <<'EOF'
+
+━━ XONG ━━ Môi trường sẵn sàng, worker CHƯA chạy.
+  Chạy 1 lứa  : DUB_CONCURRENCY=1 /root/worker-venv/bin/python \
+                  /root/duoyin-videos/worker/worker.py --stage all --once
+  Chạy liên tục: bash /root/start_worker.sh all
+EOF
+  exit 0
+fi
+
 log "5/5 Bật worker"
 bash "$ROOT/start_worker.sh"
 

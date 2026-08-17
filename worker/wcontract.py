@@ -106,10 +106,17 @@ def has_enough_speech(segments: list[dict], video_seconds: float,
 
 
 def vsr_command(vsr_python: str, video_in: str, video_out: str,
-                inpaint_mode: str = "sttn-auto") -> list[str]:
-    """Lệnh VSR đã verify 16-17.08: không truyền -c thì sttn-auto tự dò vùng sub."""
-    return [vsr_python, "backend/main.py", "-i", video_in, "-o", video_out,
-            "--inpaint-mode", inpaint_mode]
+                inpaint_mode: str = "sttn-auto", sub_area: str = "") -> list[str]:
+    """Lệnh VSR. Không truyền -c thì sttn-auto tự dò vùng sub bằng PaddleOCR.
+
+    Bản paddle CPU dò KHÔNG ra (đo 17.08: GPU 2% suốt 197s, sub còn nguyên),
+    nên khi chạy CPU paddle phải truyền sub_area="ymin,ymax,xmin,xmax".
+    """
+    cmd = [vsr_python, "backend/main.py", "-i", video_in, "-o", video_out,
+           "--inpaint-mode", inpaint_mode]
+    if sub_area:
+        cmd += ["-c", sub_area]
+    return cmd
 
 
 def mux_command(clean_video: str, dubbed_audio: str, out_path: str) -> list[str]:
