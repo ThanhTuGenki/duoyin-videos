@@ -59,8 +59,19 @@ else
   "$VSR_PY" -m pip install -q --upgrade pip
   # 2.3.1+cu118 là bản Dockerfile của VSR dùng cho CUDA 11.8
   "$VSR_PY" -m pip install -q torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu118
-  "$VSR_PY" -m pip install -q paddlepaddle-gpu==3.0.0 || warn "paddlepaddle-gpu cài lỗi — VSR vẫn chạy được bằng CPU cho phần OCR"
   "$VSR_PY" -m pip install -q -r requirements.txt
+fi
+
+# paddlepaddle-gpu KHÔNG có trên PyPI — phải lấy từ index riêng của Paddle.
+# Thiếu nó thì PaddleOCR (phần dò vùng phụ đề của VSR) không import được.
+if "$VSR_PY" -c "import paddle" 2>/dev/null; then
+  ok "paddle đã có: $("$VSR_PY" -c 'import paddle;print(paddle.__version__)')"
+else
+  log "Cài paddlepaddle-gpu từ index của Paddle (cu118)"
+  "$VSR_PY" -m pip install -q paddlepaddle-gpu==3.0.0 \
+      -i https://www.paddlepaddle.org.cn/packages/stable/cu118/ \
+    || "$VSR_PY" -m pip install -q paddlepaddle==3.0.0 \
+    || warn "paddle cài lỗi — VSR sẽ không dò được vùng sub tự động"
 fi
 
 # Lỗi đã gặp 16.08: scipy mới cần numpy>=2 trong khi torch cu118 kéo numpy 1.x
@@ -74,21 +85,42 @@ fi
 log "Dựng VoiceStudio (API-only)"
 [ -d "$VS_DIR" ] || git clone --depth 1 https://github.com/debpalash/VoiceStudio.git "$VS_DIR"
 cd "$VS_DIR"
-[ -d .venv ] || python3 -m venv .venv
+
+# VoiceStudio yêu cầu Python >= 3.11 nhưng container (pytorch/pytorch:latest,
+# Ubuntu 22.04) chỉ có 3.10 và không có conda. Dùng uv để lấy bản Python
+# standalone — nhanh, không cần PPA, và chính VoiceStudio cũng dùng uv.
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v uv >/dev/null; then
+  log "Cài uv"
+  curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+  export PATH="$HOME/.local/bin:$PATH"
+  command -v uv >/dev/null || die "Cài uv thất bại"
+fi
+ok "uv $(uv --version)"
+
 VS_PY="$VS_DIR/.venv/bin/python"
+# venv cũ có thể đã lỡ tạo bằng 3.10 — bỏ đi nếu không đạt yêu cầu
+if [ -x "$VS_PY" ] && ! "$VS_PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
+  warn "venv cũ dùng Python <3.11 — tạo lại"
+  rm -rf "$VS_DIR/.venv"
+fi
+if [ ! -x "$VS_PY" ]; then
+  uv python install 3.12
+  uv venv --python 3.12 "$VS_DIR/.venv"
+fi
+ok "VoiceStudio python $("$VS_PY" --version)"
 
 if "$VS_PY" -c "import torch, fastapi" 2>/dev/null; then
   ok "VoiceStudio deps đã có: torch $("$VS_PY" -c 'import torch;print(torch.__version__)')"
 else
-  "$VS_PY" -m pip install -q --upgrade pip
   if [ "${DRIVER:-0}" -ge 525 ]; then
-    "$VS_PY" -m pip install -q torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+    uv pip install -q --python "$VS_PY" torch torchaudio --index-url https://download.pytorch.org/whl/cu121
   else
-    "$VS_PY" -m pip install -q torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+    uv pip install -q --python "$VS_PY" torch torchaudio --index-url https://download.pytorch.org/whl/cu118
   fi
-  # Cài theo pyproject; bỏ qua phần frontend vì ta chỉ dùng REST API
-  "$VS_PY" -m pip install -q -e . || die "Cài VoiceStudio thất bại — xem log phía trên"
-  "$VS_PY" -m pip install -q requests
+  # Cài theo pyproject; bỏ qua phần frontend (bun) vì ta chỉ dùng REST API
+  uv pip install -q --python "$VS_PY" -e . || die "Cài VoiceStudio thất bại — xem log phía trên"
+  uv pip install -q --python "$VS_PY" requests
 fi
 "$VS_PY" -c "import torch; print('  VoiceStudio ok · torch', torch.__version__, '· cuda', torch.cuda.is_available())"
 
