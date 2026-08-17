@@ -41,8 +41,10 @@ ok "apt xong"
 if command -v rclone >/dev/null; then
   ok "rclone đã có: $(rclone version | head -1)"
 else
-  log "Cài rclone"
-  curl -fsSL https://rclone.org/install.sh | bash >/dev/null
+  # Cài từ apt (gói ký bởi Ubuntu) thay vì curl|bash script không ghim phiên
+  # bản. Bản apt cũ hơn nhưng Drive + service_account đã hỗ trợ từ lâu.
+  log "Cài rclone (apt)"
+  apt-get install -y -qq rclone
   ok "rclone $(rclone version | head -1)"
 fi
 
@@ -91,9 +93,10 @@ cd "$VS_DIR"
 # standalone — nhanh, không cần PPA, và chính VoiceStudio cũng dùng uv.
 export PATH="$HOME/.local/bin:$PATH"
 if ! command -v uv >/dev/null; then
-  log "Cài uv"
-  curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
-  export PATH="$HOME/.local/bin:$PATH"
+  # Cài từ PyPI với phiên bản ghim cứng, thay vì curl|sh script trôi nổi.
+  # pip xác minh hash gói theo PyPI — chuỗi cung ứng chặt hơn hẳn.
+  log "Cài uv (pip, ghim 0.12.5)"
+  python3 -m pip install -q "uv==0.12.5"
   command -v uv >/dev/null || die "Cài uv thất bại"
 fi
 ok "uv $(uv --version)"
@@ -145,13 +148,18 @@ mkdir -p "$VS_DATA"
 # ── 4c. CLIProxyAPI (dịch LLM qua Antigravity) ───────────────────
 CPA_DIR="$ROOT/cliproxy"
 CPA_VER="7.2.135"
+# sha256 lấy từ checksums.txt của chính release v7.2.135 — binary này cầm token
+# OAuth nên BẮT BUỘC kiểm trước khi giải nén; hash lệch = dừng ngay.
+CPA_SHA256="f5e5ccf0f3fead3a2ee088cb37a69e996f05b33b47f116b4351dbfd1d4224241"
 if [ -x "$CPA_DIR/cli-proxy-api" ]; then
   ok "CLIProxyAPI đã có"
 else
-  log "Cài CLIProxyAPI v$CPA_VER"
+  log "Cài CLIProxyAPI v$CPA_VER (kiểm sha256)"
   mkdir -p "$CPA_DIR"
   curl -fsSL -o "$CPA_DIR/cpa.tar.gz" \
     "https://github.com/router-for-me/CLIProxyAPI/releases/download/v${CPA_VER}/CLIProxyAPI_${CPA_VER}_linux_amd64.tar.gz"
+  echo "$CPA_SHA256  $CPA_DIR/cpa.tar.gz" | sha256sum -c - \
+    || die "CLIProxyAPI: sha256 KHÔNG khớp — tarball có thể bị can thiệp, dừng"
   tar xzf "$CPA_DIR/cpa.tar.gz" -C "$CPA_DIR"
 fi
 # Chỉ bind loopback — proxy không có xác thực
