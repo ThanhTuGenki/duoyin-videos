@@ -121,21 +121,104 @@ def create_voice(name: str) -> str | None:
     return pid
 
 
+def install_model(repo_id: str) -> None:
+    """Cài model qua Model Catalogue (tải chạy nền phía máy chủ)."""
+    log(f"Cài model {repo_id}")
+    r = requests.post(f"{API}/models/install", json={"repo_id": repo_id}, timeout=120)
+    print(f"    HTTP {r.status_code} · {r.text[:130]}")
+
+
+def transcribe_with_autoinstall(job: str, timeout: int = 5400):
+    """Transcribe; nếu máy chủ báo thiếu model ASR thì tự cài, chờ, rồi thử lại.
+
+    Máy mới dựng chưa có model nào: /dub/transcribe trả 409 kèm
+    {"error": "asr_model_missing", "missing_repo_id": ...}. Tự xử ở đây để
+    dựng máy mới không phải thao tác tay qua Model Catalogue.
+    """
+    t0 = time.time()
+    asked = set()
+    while time.time() - t0 < timeout:
+        r = requests.post(f"{API}/dub/transcribe/{job}", json={}, timeout=5400)
+        if r.ok:
+            return show("dub_transcribe", r)
+
+        detail = None
+        try:
+            detail = r.json().get("detail")
+        except ValueError:
+            pass
+        missing = detail.get("missing_repo_id") if isinstance(detail, dict) else None
+
+        if r.status_code == 409 and missing:
+            if missing not in asked:
+                warn(f"Máy chủ báo thiếu model: {missing}")
+                install_model(missing)
+                asked.add(missing)
+            print(f"    [{time.time() - t0:5.0f}s] model đang tải… chờ 30s rồi thử lại")
+            time.sleep(30)
+            continue
+
+        show("dub_transcribe", r)
+        sys.exit(f"Transcribe thất bại HTTP {r.status_code}")
+    sys.exit(f"Hết {timeout}s chờ model ASR")
+
+
+def wait_ready(task_id: str | None, timeout: int = 5400, label: str = "prep") -> None:
+    """Chờ một task chạy nền của VoiceStudio xong, qua SSE /tasks/stream/{task_id}.
+
+    Dùng cho cả hai chỗ chạy nền:
+      - /dub/upload   → tách audio → Demucs → scene detect → sự kiện 'ready'
+      - /dub/generate → dịch + TTS từng đoạn (trả {task_id} ngay, TTS làm sau)
+    Gọi bước sau khi task chưa xong sẽ nhận 409/400.
+    """
+    if not task_id:
+        warn(f"Không có task_id cho bước '{label}' — bỏ qua chờ, bước sau có thể lỗi")
+        return
+    log(f"Chờ {label} xong · SSE /tasks/stream/{task_id}")
+    t0 = time.time()
+    try:
+        with requests.get(f"{API}/tasks/stream/{task_id}", stream=True, timeout=(10, timeout)) as r:
+            for raw in r.iter_lines(decode_unicode=True):
+                if not raw or not raw.startswith("data:"):
+                    continue
+                body = raw[5:].strip()
+                try:
+                    ev = json.loads(body)
+                except ValueError:
+                    print(f"    {body[:130]}")
+                    continue
+                stage = str(ev.get("stage") or ev.get("event") or ev.get("status") or "")
+                print(f"    [{time.time() - t0:5.0f}s] {stage or '?'} · {json.dumps(ev, ensure_ascii=False)[:120]}")
+                if stage.lower() in ("ready", "done", "complete", "completed", "success"):
+                    ok(f"{label} xong sau {time.time() - t0:.0f}s · VRAM {vram()}")
+                    return
+                if stage.lower() in ("error", "failed", "failure"):
+                    dump("prep_error", ev)
+                    sys.exit(f"Prep thất bại: {ev}")
+    except requests.RequestException as e:
+        warn(f"SSE đứt ({e}) — thử đi tiếp")
+    ok(f"stream kết thúc sau {time.time() - t0:.0f}s")
+
+
 def dub(video: Path, profile_id: str | None, target_lang: str) -> None:
     log(f"Upload video: {video.name} ({video.stat().st_size / 1e6:.1f} MB)")
     t0 = time.time()
+    # Trường form tên "video" (không phải "file") — theo chữ ký dub_upload()
     with video.open("rb") as fh:
-        r = requests.post(f"{API}/dub/upload", files={"file": (video.name, fh, "video/mp4")}, timeout=1800)
+        r = requests.post(f"{API}/dub/upload", files={"video": (video.name, fh, "video/mp4")}, timeout=1800)
     up = show("dub_upload", r)
     if not r.ok:
         sys.exit("Upload thất bại")
     job = (up or {}).get("job_id") or (up or {}).get("id")
     ok(f"job_id = {job} · {time.time() - t0:.0f}s")
 
+    # Upload trả 202 rồi chạy nền: tách audio, Demucs, scene detect.
+    # Phải chờ sự kiện 'ready' mới được transcribe (theo docstring của endpoint).
+    wait_ready((up or {}).get("task_id"))
+
     log("Transcribe (WhisperX + tách giọng/nhạc nền + diarization)")
     t0 = time.time()
-    r = requests.post(f"{API}/dub/transcribe/{job}", json={}, timeout=3600)
-    tr = show("dub_transcribe", r)
+    tr = transcribe_with_autoinstall(job)
     ok(f"transcribe xong {time.time() - t0:.0f}s · VRAM {vram()}")
 
     segments = None
@@ -168,7 +251,12 @@ def dub(video: Path, profile_id: str | None, target_lang: str) -> None:
         json={"segments": payload_segments, "language": target_lang, "language_code": target_lang},
         timeout=7200,
     )
-    show("dub_generate", r)
+    gen = show("dub_generate", r)
+    if not r.ok:
+        sys.exit("Gọi generate thất bại")
+    # generate cũng chạy nền như upload: trả {task_id} ngay, TTS làm sau.
+    # Tải audio trước khi task xong sẽ nhận HTTP 400.
+    wait_ready((gen or {}).get("task_id"), label="tổng hợp giọng")
     gen_s = time.time() - t0
     ok(f"generate xong {gen_s:.0f}s · VRAM {vram()}")
 
