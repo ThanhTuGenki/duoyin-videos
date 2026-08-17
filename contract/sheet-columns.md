@@ -11,13 +11,17 @@ Worker chỉ đọc hợp đồng này, không biết nguồn video. Extension (
 | `output/` — thành phẩm ra | https://drive.google.com/drive/folders/1GRQTbjnEsjGa_VSD3z6ZCa3_LvVlyPwD |
 | Folder video mẫu `inbox/sample-001/` | https://drive.google.com/drive/folders/1MhEPLa7JcyEjOYKuN_B_97OR9zWCcVXL |
 | Sheet queue `duoyin-videos-queue` (đang dùng) | https://docs.google.com/spreadsheets/d/1yrp2Jxp-Uj5WD5RIJMzXWkQaTe7TwHdNmWnmJuqPmTw/edit |
-| **Sheet MẪU** — bấm link này để tự tạo bản sao | https://docs.google.com/spreadsheets/d/1I263JkylKlgeglImqQNEF6F-loDozMFpOgTKuOY9WW4/copy |
+| **Sheet MẪU (chuẩn)** — bấm để tự tạo bản sao | https://docs.google.com/spreadsheets/d/1tLx0SQUqWQ1q7qGpkdcH0ATMYGdCSPA9AUMqLRHyFRY/copy |
+| Sheet mẫu cũ (kiểu format thường, giữ để tham khảo) | https://docs.google.com/spreadsheets/d/1I263JkylKlgeglImqQNEF6F-loDozMFpOgTKuOY9WW4/copy |
 
-Sheet mẫu đã có sẵn: header đậm + freeze, dropdown cho `voice`/`translation_mode`/`status`, màu theo trạng thái, dòng ERROR ửng đỏ, sọc xen kẽ, bộ lọc, chú thích hover trên từng tiêu đề. Dùng cho người mới: copy về, dán ID mới vào Options của extension là chạy.
+Sheet mẫu chuẩn dùng **Google Sheets Table** (`queue`): header xanh + freeze, dropdown chip gốc cho `voice`/`translation_mode`/`status`, `duration`/`process_time` kiểu số, màu theo trạng thái, dòng ERROR ửng đỏ, sọc xen kẽ, chú thích hover trên từng tiêu đề. Dùng cho sheet mới: copy về, dán ID vào Options của extension là chạy.
 
-Trang trí lại bất cứ lúc nào (không cần nút trong extension):
+Áp/dựng lại định dạng bất cứ lúc nào (không cần nút trong extension):
 ```bash
-cd extension && node scripts/format-sheet.mjs <spreadsheetId> [--clear-data]
+cd extension
+node scripts/setup-table.mjs <spreadsheetId> [rows]   # sheet có Table (khuyên dùng)
+node scripts/format-sheet.mjs <spreadsheetId> [--clear-data]   # sheet thường
+node scripts/inspect-sheet.mjs <spreadsheetId>        # soi cấu trúc hiện tại
 ```
 
 ## Cấu trúc folder Drive cho mỗi video
