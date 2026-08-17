@@ -142,6 +142,45 @@ fi
 
 mkdir -p "$VS_DATA"
 
+# ── 4c. CLIProxyAPI (dịch LLM qua Antigravity) ───────────────────
+CPA_DIR="$ROOT/cliproxy"
+CPA_VER="7.2.135"
+if [ -x "$CPA_DIR/cli-proxy-api" ]; then
+  ok "CLIProxyAPI đã có"
+else
+  log "Cài CLIProxyAPI v$CPA_VER"
+  mkdir -p "$CPA_DIR"
+  curl -fsSL -o "$CPA_DIR/cpa.tar.gz" \
+    "https://github.com/router-for-me/CLIProxyAPI/releases/download/v${CPA_VER}/CLIProxyAPI_${CPA_VER}_linux_amd64.tar.gz"
+  tar xzf "$CPA_DIR/cpa.tar.gz" -C "$CPA_DIR"
+fi
+# Chỉ bind loopback — proxy không có xác thực
+printf 'host: "127.0.0.1"\nport: 8317\nauth-dir: "/root/.cli-proxy-api"\n' > "$CPA_DIR/config.yaml"
+
+# Khôi phục token Antigravity từ secrets (scp từ repo local: secrets/cli-proxy-api/)
+mkdir -p "$ROOT/.cli-proxy-api"
+if ls "$ROOT"/secrets/cli-proxy-api/*.json >/dev/null 2>&1; then
+  cp "$ROOT"/secrets/cli-proxy-api/*.json "$ROOT/.cli-proxy-api/"
+  ok "Đã khôi phục token Antigravity từ secrets — không cần login lại"
+elif ls "$ROOT"/.cli-proxy-api/*.json >/dev/null 2>&1; then
+  ok "Token Antigravity đã có sẵn"
+else
+  warn "CHƯA có token Antigravity — dịch cinematic sẽ không chạy."
+  warn "Login 1 lần: (local) ssh -p <PORT> -L 51121:127.0.0.1:51121 root@<IP>"
+  warn "             (đây)  $CPA_DIR/cli-proxy-api --config $CPA_DIR/config.yaml --antigravity-login --no-browser"
+fi
+
+cat > "$ROOT/start_cliproxy.sh" <<EOF
+#!/usr/bin/env bash
+# Bật CLIProxyAPI (cổng 8317, loopback). Token tự refresh mỗi 15 phút khi chạy.
+for pid in \$(pgrep -f 'cli-proxy-api --config'); do kill "\$pid" 2>/dev/null || true; done
+sleep 1
+setsid nohup "$CPA_DIR/cli-proxy-api" --config "$CPA_DIR/config.yaml" \\
+  > /tmp/cliproxy.log 2>&1 < /dev/null &
+echo "CLIProxyAPI đang khởi động (pid \$!) — log: /tmp/cliproxy.log"
+EOF
+chmod +x "$ROOT/start_cliproxy.sh"
+
 # ── 5. Script khởi động VoiceStudio ──────────────────────────────
 cat > "$ROOT/start_voicestudio.sh" <<EOF
 #!/usr/bin/env bash
@@ -177,8 +216,13 @@ cat <<EOF
   Dữ liệu VS   : $VS_DATA
 
   Bước tiếp theo:
+    bash $ROOT/start_cliproxy.sh             # bật proxy dịch LLM cổng 8317
     bash $ROOT/start_voicestudio.sh          # bật API cổng 3900
     tail -f /tmp/voicestudio.log             # chờ dòng "Application startup complete"
-    python3 worker/spike_voicestudio.py --video <file.mp4>
+    # trỏ VoiceStudio vào proxy (1 lần, lưu bền qua prefs):
+    curl -X PUT http://127.0.0.1:3900/api/settings/llm-endpoint \\
+      -H 'Content-Type: application/json' \\
+      -d '{"base_url":"http://127.0.0.1:8317/v1","model":"gemini-3.5-flash-low","api_key":"dummy"}'
+    python3 worker/spike_voicestudio.py --video <file.mp4> --quality cinematic
 
 EOF

@@ -107,14 +107,35 @@ curl -X PUT http://127.0.0.1:3900/api/settings/llm-endpoint \
 
 Số đo: cinematic 25 đoạn, generate 46s, VRAM 4.453 MiB. `quality_used=cinematic`.
 
-Lưu ý:
-- **Token `/root/.cli-proxy-api/*.json` là secret** — backup như service account,
-  không commit. Mất container = login lại (1 lần, cần tunnel).
+### Vòng đời token & cơ chế khi hết hạn
+
+Hai loại token, hành xử khác nhau:
+
+| Token | Sống bao lâu | Ai lo |
+|---|---|---|
+| Access token | ~1 giờ | **CLIProxyAPI tự refresh mỗi 15 phút** khi đang chạy (log: `core auth auto-refresh started`) — không cần làm gì |
+| Refresh token | Rất lâu (OAuth client là của chính Google/Antigravity, không dính hạn 7 ngày của app Testing) | Chỉ chết khi: bạn revoke trong Google Account, đổi mật khẩu, hoặc **không dùng >6 tháng** |
+
+Cơ chế 4 lớp (đã cài vào setup.sh, worker Phase 4 dùng lớp 3-4):
+
+1. **Backup**: token nằm ở `secrets/cli-proxy-api/` trên máy local (gitignore).
+   Thuê máy mới → scp thư mục `secrets/` lên `/root/secrets/` → `setup.sh` tự
+   khôi phục vào `/root/.cli-proxy-api/` — **không phải login lại**.
+2. **Tự refresh**: proxy đang chạy thì token không bao giờ hết hạn giữa chừng.
+3. **Health check trước mỗi phiên** (worker Phase 4): gọi `GET /v1/models` của
+   proxy; lỗi/401 → báo Telegram "cần login lại Antigravity" kèm lệnh sẵn.
+4. **Fallback không đứng dây chuyền** (worker Phase 4): dịch `cinematic` lỗi
+   → tự hạ về `fast` (Google MT, không cần token), ghi chú vào Sheet cột
+   translation_mode để biết video nào cần chạy lại bản đẹp.
+
+Login lại (hiếm khi cần, ~2 phút): xem cảnh báo setup.sh in ra — mở tunnel
+`ssh -L 51121:...`, chạy `--antigravity-login --no-browser`, mở URL, đăng nhập.
+Xong **nhớ backup token mới về secrets/**.
+
+Lưu ý khác:
 - Bind loopback (VoiceStudio và proxy đều không có xác thực).
 - Dùng quota subscription qua proxy là vùng xám ToS — phương án thay thế:
   API key Gemini Flash trả phí, đổi mỗi `base_url`/`api_key`.
-- Phase 4: đưa vào setup.sh + start script; worker fallback `cinematic → fast`
-  khi proxy không phản hồi.
 
 ## Phase 4 (chưa làm)
 
