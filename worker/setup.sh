@@ -86,16 +86,50 @@ else
   uv pip install -q --python "$VSR_PY" "numpy==1.26.4"
 fi
 
-# paddlepaddle-gpu KHÔNG có trên PyPI — phải lấy từ index riêng của Paddle.
-# Thiếu nó thì PaddleOCR (phần dò vùng phụ đề của VSR) không import được.
-if "$VSR_PY" -c "import paddle" 2>/dev/null; then
+# paddle cho PaddleOCR (phần dò vùng phụ đề của VSR). Thiếu nó VSR không chạy.
+#
+# Lỗi đã mất ~50 phút ngày 17.08: bản GPU chỉ có trên mirror Trung Quốc của
+# Paddle, và từ datacenter này nó tải với tốc độ 0MB/phút — KHÔNG lỗi, chỉ
+# treo. Vì `pip A || pip B` chỉ rơi sang B khi A *thoát với mã lỗi*, setup
+# đứng vô hạn. Nên phải chặn bằng `timeout`, không phải dựa vào exit code.
+#
+# PADDLE_MODE=cpu để bỏ hẳn bước thử GPU (thuê máy ngắn, không muốn cược 7 phút).
+PADDLE_MODE="${PADDLE_MODE:-auto}"
+PADDLE_GPU_TIMEOUT="${PADDLE_GPU_TIMEOUT:-420}"
+
+paddle_works() { "$VSR_PY" -c "import paddle" 2>/dev/null; }
+
+if paddle_works; then
   ok "paddle đã có: $("$VSR_PY" -c 'import paddle;print(paddle.__version__)')"
 else
-  log "Cài paddlepaddle-gpu từ index của Paddle (cu118)"
-  "$VSR_PY" -m pip install -q paddlepaddle-gpu==3.0.0 \
-      -i https://www.paddlepaddle.org.cn/packages/stable/cu118/ \
-    || "$VSR_PY" -m pip install -q paddlepaddle==3.0.0 \
-    || warn "paddle cài lỗi — VSR sẽ không dò được vùng sub tự động"
+  if [ "$PADDLE_MODE" != "cpu" ]; then
+    log "Thử paddlepaddle-gpu từ mirror Paddle (tối đa ${PADDLE_GPU_TIMEOUT}s rồi bỏ)"
+    timeout "$PADDLE_GPU_TIMEOUT" "$VSR_PY" -m pip install -q \
+        --timeout 30 --retries 1 \
+        paddlepaddle-gpu==3.0.0 \
+        -i https://www.paddlepaddle.org.cn/packages/stable/cu118/ \
+      || warn "mirror GPU chậm/lỗi — chuyển sang bản CPU trên PyPI"
+  fi
+
+  # Bản CPU nằm trên PyPI (CDN toàn cầu) nên tải nhanh và ổn định.
+  # OCR chạy CPU chậm hơn, nhưng phần nặng nhất — inpainting STTN/LAMA — là
+  # torch nên vẫn trên GPU. Đánh đổi này giữ cho setup luôn xong.
+  if ! paddle_works; then
+    log "Cài paddlepaddle (CPU) từ PyPI"
+    uv pip install -q --python "$VSR_PY" paddlepaddle==3.0.0 \
+      || warn "paddle cài lỗi — VSR sẽ không dò được vùng sub tự động"
+  fi
+fi
+
+# Cài xong chưa chắc import được (gói dở dang vẫn nằm trên đĩa) — kiểm thật.
+if paddle_works; then
+  "$VSR_PY" -c "
+import paddle
+gpu = paddle.device.is_compiled_with_cuda()
+print(f\"  paddle {paddle.__version__} · {'GPU' if gpu else 'CPU (dò sub chậm hơn, inpaint vẫn GPU)'}\")
+"
+else
+  warn "paddle KHÔNG import được — stage vsr sẽ lỗi, stage dub vẫn chạy bình thường"
 fi
 
 # Lỗi đã gặp 16.08: scipy mới cần numpy>=2 trong khi torch cu118 kéo numpy 1.x
@@ -228,6 +262,28 @@ else
   uv pip install -q --python "$WK_VENV/bin/python" "gspread==6.1.4" "requests==2.32.3" \
     || "$WK_VENV/bin/pip" install -q "gspread==6.1.4" "requests==2.32.3"
   ok "worker venv xong"
+fi
+
+# Remote ĐỌC Drive (gdrive, service account). Trước 18.08 setup.sh KHÔNG tạo
+# remote này — trên 3090 tôi tạo tay nên không ai phát hiện; máy mới sẽ chết ở
+# bước tải video từ inbox. Service account đọc được vì folder đã share cho nó.
+if rclone listremotes 2>/dev/null | grep -q '^gdrive:'; then
+  ok "remote gdrive (đọc) đã có"
+elif [ -f "$ROOT/secrets/sa.json" ]; then
+  log "Tạo remote gdrive (đọc, service account)"
+  mkdir -p "$ROOT/.config/rclone"
+  {
+    echo ""
+    echo "[gdrive]"
+    echo "type = drive"
+    echo "scope = drive.readonly"
+    echo "service_account_file = $ROOT/secrets/sa.json"
+    echo "root_folder_id = 14sfsTkv-k8S2rqR5kFj6EoVr_RBqXsjh"
+  } >> "$ROOT/.config/rclone/rclone.conf"
+  ok "remote gdrive xong"
+else
+  warn "THIẾU $ROOT/secrets/sa.json — worker KHÔNG đọc được Sheet lẫn inbox."
+  warn "→ scp thư mục secrets/ của repo lên /root/ rồi chạy lại setup.sh"
 fi
 
 # Remote GHI Drive (gdrive-user, OAuth cá nhân): service account KHÔNG có quota
