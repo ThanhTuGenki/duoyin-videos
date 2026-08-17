@@ -10,9 +10,11 @@ Worker chỉ đọc hợp đồng này, không biết nguồn video. Extension (
 | `inbox/` — video vào | https://drive.google.com/drive/folders/1PbeSJv39pGnu0yLxqZpBkTZfpaUcRgLj |
 | `output/` — thành phẩm ra | https://drive.google.com/drive/folders/1GRQTbjnEsjGa_VSD3z6ZCa3_LvVlyPwD |
 | Folder video mẫu `inbox/sample-001/` | https://drive.google.com/drive/folders/1MhEPLa7JcyEjOYKuN_B_97OR9zWCcVXL |
-| Sheet queue `duoyin-videos-queue` (đang dùng) | https://docs.google.com/spreadsheets/d/1yrp2Jxp-Uj5WD5RIJMzXWkQaTe7TwHdNmWnmJuqPmTw/edit |
-| **Sheet MẪU (chuẩn)** — bấm để tự tạo bản sao | https://docs.google.com/spreadsheets/d/1tLx0SQUqWQ1q7qGpkdcH0ATMYGdCSPA9AUMqLRHyFRY/copy |
+| **Sheet queue đang dùng** (Table 13 cột) | https://docs.google.com/spreadsheets/d/1tLx0SQUqWQ1q7qGpkdcH0ATMYGdCSPA9AUMqLRHyFRY/edit |
+| Bấm để tự tạo bản sao dùng cho sheet mới | https://docs.google.com/spreadsheets/d/1tLx0SQUqWQ1q7qGpkdcH0ATMYGdCSPA9AUMqLRHyFRY/copy |
 | Sheet mẫu cũ (kiểu format thường, giữ để tham khảo) | https://docs.google.com/spreadsheets/d/1I263JkylKlgeglImqQNEF6F-loDozMFpOgTKuOY9WW4/copy |
+
+> **Đổi sheet thì phải đổi ở 2 nơi**: `DEFAULT_CONFIG.spreadsheetId` trong `extension/src/lib/config.ts` (mặc định cho máy mới) **và** Options của extension nếu đã từng bấm Lưu. ID cũ đã xoá được liệt vào `STALE_SPREADSHEET_IDS` để tự rơi về mặc định thay vì lỗi 404.
 
 Sheet mẫu chuẩn dùng **Google Sheets Table** (`queue`): header xanh + freeze, dropdown chip gốc cho `voice`/`translation_mode`/`status`, `duration`/`process_time` kiểu số, màu theo trạng thái, dòng ERROR ửng đỏ, sọc xen kẽ, chú thích hover trên từng tiêu đề. Dùng cho sheet mới: copy về, dán ID vào Options của extension là chạy.
 

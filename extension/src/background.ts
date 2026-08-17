@@ -4,7 +4,7 @@
 import { buildMeta, sheetRow, type CapturedPage } from "./lib/contract";
 import { withFreshToken } from "./lib/auth";
 import { createFolder, uploadSmall, uploadVideo, folderLink } from "./lib/drive";
-import { appendRow } from "./lib/sheets";
+import { appendRow, assertSheetReachable } from "./lib/sheets";
 import { loadConfig } from "./lib/config";
 import type { IngestRequest, ProgressEvent } from "./lib/messages";
 
@@ -96,6 +96,10 @@ async function runIngest(req: IngestRequest, tabId: number): Promise<void> {
       "Không tìm được URL video (DOM chỉ có blob: và chưa sniff được từ network). Thử phát video vài giây rồi bấm lại.",
     );
   }
+
+  // Kiểm tra Sheet TRƯỚC khi tải/upload — cấu hình sai thì báo ngay, khỏi phí băng thông
+  progress("Kiểm tra Sheet đích…");
+  await withFreshToken((token) => assertSheetReachable(token, cfg.spreadsheetId));
 
   progress("Đang tải video từ trang…");
   const videoBlob = await fetchBlob(videoUrl, page.sourceUrl);
