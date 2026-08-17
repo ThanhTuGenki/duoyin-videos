@@ -35,7 +35,7 @@ inbox/<id>/
 └── meta.json     # bắt buộc — theo meta.schema.json
 ```
 
-Thành phẩm: `output/<id>/no_sub_vi.mp4` (+ log nếu có).
+Thành phẩm ra `output/<id>/` — xem bảng ở mục "Vòng đời status" bên dưới.
 
 ## Cột Sheet (tab đầu tiên của duoyin-videos-queue)
 
@@ -47,7 +47,7 @@ Thành phẩm: `output/<id>/no_sub_vi.mp4` (+ log nếu có).
 | D | `source_url` | Extension | Link gốc — tham khảo, worker KHÔNG dùng để tải |
 | E | `drive_folder_link` | Extension | Link folder `inbox/<id>/` |
 | F | `voice` | Người dùng (default: `default`) | Giọng lồng tiếng |
-| G | `translation_mode` | Người dùng (default: `cinematic`) | `fast` / `cinematic` / `autofit` |
+| G | `translation_mode` | Người dùng (default: `cinematic`) | `fast` (Google MT, thô) / `cinematic` (LLM, **nên dùng**) / `autofit` (đã đo 17.08: KHÔNG ngắn hơn cinematic, không cần) |
 | H | `status` | Worker | Xem vòng đời bên dưới. Extension ghi `NEW` |
 | I | `output_link` | Worker | Link thành phẩm trong output/ |
 | J | `error` | Worker | Message lỗi (khi status=ERROR) |
@@ -63,7 +63,7 @@ trường, tách ra để nhánh dub không bị chặn).
 ```
 GIAI ĐOẠN A — dub (worker --stage dub)
   NEW ──► DUBBING ──► DUBBED
-                        └─ Drive output/<id>/: audio_vi.wav + <id>_preview.mp4
+                        └─ Drive output/<id>/: <id>_dubbed.mp4 + <id>_vi.srt
 
 GIAI ĐOẠN B — xóa sub (worker --stage vsr)
   DUBBED ──► CLEANING ──► DONE
@@ -76,14 +76,19 @@ GIAI ĐOẠN B — xóa sub (worker --stage vsr)
 |---|---|---|
 | `NEW` | chờ dub | worker stage dub |
 | `DUBBING` | đang dịch + lồng tiếng | — |
-| `DUBBED` | có audio Việt + preview, **duyệt được rồi** | worker stage vsr |
-| `CLEANING` | đang xóa sub + ghép thành phẩm | — |
+| `DUBBED` | có video tiếng Việt, **duyệt được rồi** | worker stage vsr |
+| `CLEANING` | đang xóa sub | — |
 | `DONE` | thành phẩm hoàn chỉnh | — |
 | `ERROR` | lỗi, xem cột error | bạn quyết |
 
-**Preview để làm gì:** `<id>_preview.mp4` là video **gốc (còn sub Trung) + tiếng
-Việt** — nghe/duyệt giọng và bản dịch **trước** khi chạy VSR (phần đắt nhất,
-~2.4× thời lượng video). Bản dịch dở thì khỏi tốn tiền xóa sub.
+**`<id>_dubbed.mp4` kiêm hai việc:** vừa là bản duyệt (video gốc còn sub Trung
+nhưng đã nói tiếng Việt — nghe/duyệt giọng và bản dịch **trước** khi tốn tiền
+VSR, phần đắt nhất ~2.4× thời lượng), vừa là **đầu vào của stage vsr**. Không có
+bước ghép audio riêng: VoiceStudio xuất video đã trộn sẵn (h264+aac, 1 track
+tiếng Việt, `preserve_bg=true` giữ nhạc nền).
+
+**`<id>_vi.srt` lưu rời, KHÔNG burn vào video** (quyết định 17.08). Muốn có sub
+tiếng Việt thì gắn ở CapCut hoặc script phụ — giữ video sạch để linh hoạt.
 
 Quy tắc chạy lại:
 - Worker chỉ nhận dòng đúng status đầu vào của stage, đủ `id` + `drive_folder_link`.

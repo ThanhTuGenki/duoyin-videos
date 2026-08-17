@@ -141,7 +141,7 @@ Lưu ý khác:
 
 Dub và xóa sub **tách container riêng**. Lý do: dựng VSR hay vấp môi trường
 (Python 3.12, OpenGL, paddle từ mirror TQ), tách ra thì nhánh dub chạy được
-ngay; thêm nữa preview cho phép **duyệt trước khi tốn tiền VSR**.
+ngay; thêm nữa bản dub cho phép **duyệt trước khi tốn tiền VSR**.
 
 ```bash
 bash /root/start_worker.sh dub     # NEW → DUBBING → DUBBED  (máy này)
@@ -155,16 +155,55 @@ bash /root/start_worker.sh all     # cả hai trên cùng máy
 
 | Giai đoạn | File | Dùng để |
 |---|---|---|
-| dub | `audio_vi.wav` | nguyên liệu cho stage vsr |
-| dub | `<id>_preview.mp4` | video gốc + tiếng Việt — **duyệt giọng/bản dịch** |
+| dub | `<id>_dubbed.mp4` | video đã lồng tiếng Việt — **duyệt** + **đầu vào stage vsr** |
+| dub | `<id>_vi.srt` | phụ đề Việt rời (gắn ở CapCut nếu cần) |
 | vsr | `<id>_vi.mp4` | thành phẩm: sạch sub + tiếng Việt |
 
-Số đo thật (RTX 3090, video ~118s): dub **155s/video** (TTS 80s + tải/mux/upload
-52MB). `health_check` chỉ kiểm thứ stage đó cần — VSR chưa dựng xong không
-chặn stage dub.
+**Không tự ghép audio nữa** (đổi 17.08). Worker lấy thẳng video VoiceStudio đã
+trộn: `GET /dub/download/{job}?include_tracks=vi&default_track=vi&preserve_bg=true`
+→ h264+aac, 1 track tiếng Việt, giữ nhạc nền. Trước đây worker chỉ tải audio rồi
+tự `ffmpeg` ghép vào video gốc — bỏ mất phần VoiceStudio canh lại timeline video,
+nên câu dài bị cắt cụt.
+
+Số đo thật (RTX 3090, video ~110-120s):
+
+| Chỉ số | Giá trị |
+|---|---|
+| dub, tuần tự | ~155s/video |
+| dub, `DUB_CONCURRENCY=3` | ~86s/video (đo 16 video/22m59s) → **nhanh 1.8×**, không phải 3× |
+| Video ra bị giãn | +5.5% ~ +6.5% (do `smart_fit`, mắt thường không thấy) |
+| Dung lượng ra | ~85MB/2 phút (VoiceStudio encode lại vì retime video) |
+
+`health_check` chỉ kiểm thứ stage đó cần — VSR chưa dựng xong không chặn stage dub.
+
+### Vì sao `smart_fit` chứ không phải `concise`/`stretch_video` (đo 17.08)
+
+Vấn đề user báo: *"nó hay bị dừng ngang ở từ cuối cùng không được tự nhiên"*.
+
+Nguyên nhân đo được: tiếng Việt cần **~2× thời gian** tiếng Trung cho cùng ý —
+80-100% câu có `rate_ratio` > 1, cao nhất 2.5. Đây là tính chất cặp ngôn ngữ,
+không phải lỗi bản dịch.
+
+| `TIMING_STRATEGY` | Cách xử lý câu lố | Kết quả |
+|---|---|---|
+| `concise` (default của VoiceStudio) | **cắt cứng** ở biên slot | → cụt từ cuối. Đây là thứ user nghe thấy. |
+| `strict_slot` | nén audio cho vừa slot | giọng nhanh bất thường |
+| **`smart_fit`** ← đang dùng | audio nhanh ≤1.2× **+** video chậm ≤2.0×, có bản ghi cue đã khớp | không cắt, `.srt` vẫn đúng timestamp |
+| `stretch_video` | chỉ giãn video | **KHÔNG** có bản ghi cue đã khớp → `.srt` lệch. Tránh, vì ta cần `.srt` dùng ở CapCut. |
+
+Chỉ giãn +6% tổng thời lượng dù `rate_ratio` tối đa 2.5 — vì đó là câu lố *nhất*,
+còn khoảng lặng giữa các câu hấp thụ gần hết phần dư.
+
+Đã thử `translation_mode=autofit` (cinematic + ép ngắn) kỳ vọng giảm lố: **không
+có tác dụng** (34/34 câu vẫn lố, so với 31/33 của cinematic). Giữ `cinematic`.
+
+Đổi bằng env, không phải sửa code:
+```bash
+TIMING_STRATEGY=strict_slot DUB_CONCURRENCY=3 bash /root/start_worker.sh dub
+```
 
 Cấu trúc:
-- `wcontract.py` — pure functions theo hợp đồng (21 unit tests, chạy local:
+- `wcontract.py` — pure functions theo hợp đồng (33 unit tests, chạy local:
   `.venv-dev/bin/python -m pytest tests/`)
 - `worker.py` — vòng lặp + client mỏng (Sheet/rclone/VSR/VoiceStudio/ffmpeg)
 

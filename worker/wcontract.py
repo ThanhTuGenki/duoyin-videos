@@ -16,7 +16,7 @@ COLUMNS = [
 COL_INDEX = {name: i for i, name in enumerate(COLUMNS)}
 
 # Vòng đời 2 giai đoạn (thiết kế 17.08, tách dub và VSR chạy container riêng):
-#   Giai đoạn A (dub): NEW → DUBBING → DUBBED   (audio_vi.wav + preview lên Drive)
+#   Giai đoạn A (dub): NEW → DUBBING → DUBBED   (<id>_dubbed.mp4 + <id>_vi.srt lên Drive)
 #   Giai đoạn B (vsr): DUBBED → CLEANING → DONE (video sạch sub + tiếng Việt)
 STATUS_NEW = "NEW"
 STATUS_DUBBING = "DUBBING"
