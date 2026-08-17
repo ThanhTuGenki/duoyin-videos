@@ -111,11 +111,20 @@ def vsr_command(vsr_python: str, video_in: str, video_out: str,
 
     Bản paddle CPU dò KHÔNG ra (đo 17.08: GPU 2% suốt 197s, sub còn nguyên),
     nên khi chạy CPU paddle phải truyền sub_area="ymin,ymax,xmin,xmax".
+
+    -c của VSR khai báo nargs=4 (backend/tools/args_handler.py) nên phải đưa
+    BỐN số rời, không phải một chuỗi có dấu phẩy — đã kiểm chứng bằng cách
+    chạy thật: -c 860 1010 100 1820 cho video 1920x1080 thì GPU lên 95% và
+    sub biến mất, còn không có -c thì GPU 2% và sub còn nguyên.
     """
     cmd = [vsr_python, "backend/main.py", "-i", video_in, "-o", video_out,
            "--inpaint-mode", inpaint_mode]
     if sub_area:
-        cmd += ["-c", sub_area]
+        coords = [p.strip() for p in sub_area.replace(",", " ").split() if p.strip()]
+        if len(coords) != 4:
+            raise ValueError(
+                f"sub_area cần đúng 4 số 'ymin,ymax,xmin,xmax', nhận: {sub_area!r}")
+        cmd += ["-c", *coords]
     return cmd
 
 
