@@ -121,6 +121,64 @@ def create_voice(name: str) -> str | None:
     return pid
 
 
+def translate_segments(job: str, segments: list, target_lang: str, quality: str) -> list:
+    """Dịch phụ đề qua /dub/translate.
+
+    QUAN TRỌNG: /dub/generate KHÔNG tự dịch — nó đọc đúng chuỗi text ta gửi.
+    Bỏ qua bước này thì TTS sẽ đọc nguyên văn tiếng Trung bằng giọng đã clone
+    (đã dính đúng lỗi đó một lần).
+    """
+    log(f"Dịch {len(segments)} đoạn sang '{target_lang}' · quality={quality}")
+    payload = {
+        "segments": [
+            {
+                "id": s.get("id") or str(i),
+                "text": s.get("text", ""),
+                "start": s.get("start"),
+                "end": s.get("end"),
+                "slot_seconds": round(float(s.get("end", 0)) - float(s.get("start", 0)), 2),
+            }
+            for i, s in enumerate(segments)
+        ],
+        "target_lang": target_lang,
+        "job_id": job,
+        "quality": quality,
+    }
+    r = requests.post(f"{API}/dub/translate", json=payload, timeout=3600)
+    data = show("dub_translate", r)
+    if not r.ok:
+        sys.exit("Dịch thất bại")
+
+    # Phản hồi có thể là list thẳng hoặc bọc trong segments/results/data
+    rows = data if isinstance(data, list) else None
+    if rows is None and isinstance(data, dict):
+        # Phản hồi thật: {"translated": [{id, text, rate_ratio, plan}], target_lang, source_lang, quality_used}
+        for key in ("translated", "segments", "results", "data", "translations"):
+            if isinstance(data.get(key), list):
+                rows = data[key]
+                break
+    if not rows:
+        sys.exit("Không đọc được kết quả dịch — mở dub_translate.json xem cấu trúc thật")
+
+    by_id = {str(row.get("id")): row.get("text", "") for row in rows if isinstance(row, dict)}
+    out, unchanged = [], 0
+    for i, s in enumerate(segments):
+        sid = str(s.get("id") or i)
+        new_text = by_id.get(sid) or ""
+        if not new_text:
+            warn(f"Đoạn {sid} không có bản dịch — giữ nguyên bản gốc")
+            new_text = s.get("text", "")
+        if new_text.strip() == s.get("text", "").strip():
+            unchanged += 1
+        out.append({**s, "text": new_text})
+
+    # Chốt chặn: nếu phần lớn câu y hệt bản gốc thì dịch đã không xảy ra
+    if unchanged >= max(1, len(segments) // 2):
+        warn(f"{unchanged}/{len(segments)} đoạn KHÔNG đổi so với bản gốc — nhiều khả năng chưa dịch được")
+    ok(f"đã dịch · ví dụ: {out[0]['text'][:70]}")
+    return out
+
+
 def audio_ext(blob: bytes) -> str:
     """Đuôi file theo magic bytes, không tin vào tên endpoint."""
     if blob[:4] == b"RIFF" and blob[8:12] == b"WAVE":
@@ -213,7 +271,7 @@ def wait_ready(task_id: str | None, timeout: int = 5400, label: str = "prep") ->
     ok(f"stream kết thúc sau {time.time() - t0:.0f}s")
 
 
-def dub(video: Path, profile_id: str | None, target_lang: str) -> None:
+def dub(video: Path, profile_id: str | None, target_lang: str, quality: str = "fast") -> None:
     log(f"Upload video: {video.name} ({video.stat().st_size / 1e6:.1f} MB)")
     t0 = time.time()
     # Trường form tên "video" (không phải "file") — theo chữ ký dub_upload()
@@ -245,8 +303,11 @@ def dub(video: Path, profile_id: str | None, target_lang: str) -> None:
         return
     ok(f"{len(segments)} segment · câu đầu: {str(segments[0].get('text'))[:60]}")
 
-    log(f"Dịch + tổng hợp giọng sang '{target_lang}'"
-        + (f" (dùng profile {profile_id} cho MỌI segment)" if profile_id else " (giọng mặc định)"))
+    # BẮT BUỘC: dịch trước khi tổng hợp giọng (generate không tự dịch)
+    segments = translate_segments(job, segments, target_lang, quality)
+
+    log(f"Tổng hợp giọng '{target_lang}'"
+        + (f" · dùng profile {profile_id} cho MỌI đoạn" if profile_id else " · giọng mặc định"))
     payload_segments = []
     for s in segments:
         seg = {
@@ -300,6 +361,8 @@ def main() -> None:
     ap.add_argument("--lang", default="vi", help="ngôn ngữ đích (mặc định vi)")
     ap.add_argument("--voice-name", default="MinhQuan", help="tên voice profile")
     ap.add_argument("--skip-voice", action="store_true", help="bỏ qua tạo giọng, dùng giọng mặc định")
+    ap.add_argument("--quality", default="fast", choices=["fast", "cinematic", "autofit"],
+                    help="chất lượng dịch: fast (Google, không cần key) / cinematic, autofit (cần LLM key)")
     args = ap.parse_args()
 
     video = Path(args.video)
@@ -309,7 +372,7 @@ def main() -> None:
     print(f"\nAPI={API} · OUT={OUT} · VRAM lúc bắt đầu: {vram()}\n")
     wait_health()
     pid = None if args.skip_voice else create_voice(args.voice_name)
-    dub(video, pid, args.lang)
+    dub(video, pid, args.lang, args.quality)
 
     log("KẾT LUẬN CẦN CHẤM")
     print(f"""

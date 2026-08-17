@@ -117,6 +117,14 @@ else
   uv sync --python 3.12 || die "uv sync thất bại — xem log phía trên"
   uv pip install -q --python "$VS_PY" requests
 fi
+
+# Engine dịch mặc định ("google") là gói TUỲ CHỌN, không nằm trong uv.lock.
+# Thiếu nó thì /dub/translate trả 400 và cả dây chuyền đứng ở khâu dịch.
+if ! "$VS_PY" -c "import deep_translator" 2>/dev/null; then
+  log "Cài deep_translator (engine dịch google)"
+  uv pip install -q --python "$VS_PY" deep_translator \
+    || warn "deep_translator cài lỗi — phải đổi sang engine Argos/NLLB/OpenAI"
+fi
 "$VS_PY" -c "import torch; print('  VoiceStudio ok · torch', torch.__version__, '· cuda', torch.cuda.is_available())"
 
 # WhisperX / faster-whisper chạy trên CTranslate2 và BẮT BUỘC cần cuDNN 8,
