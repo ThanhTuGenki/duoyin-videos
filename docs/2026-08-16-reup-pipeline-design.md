@@ -145,14 +145,14 @@ Chỉ dùng 3060 nếu làm 1-2 video ngắn/ngày, chấp nhận chạy tuần 
 
 Extension chỉ phụ thuộc **hợp đồng ingest** — không phụ thuộc worker/VoiceStudio → làm trước an toàn. Spike VoiceStudio không chặn gì, tranh thủ chạy lúc container đang bật sẵn.
 
-### Phase 1 — Nơi lưu trước: Drive + Sheet + hợp đồng
+### Phase 1 — Nơi lưu trước: Drive + Sheet + hợp đồng — ✅ XONG 16.08.2026
 1. Tạo cấu trúc **Google Drive** thật: `duoyin-videos/inbox/` (mỗi video 1 folder: `video.mp4` + `thumb.jpg` + `meta.json`) và `duoyin-videos/output/` (thành phẩm)
 2. Tạo **Google Sheet** thật với đầy đủ cột theo schema mục 5, kèm 1 dòng mẫu
 3. Tạo **service account** (Google Cloud) + share quyền Editor vào Sheet & Drive folder — worker và extension dùng chung điểm truy cập này
 4. Repo GitHub private (cấu trúc mục 11) + văn bản hóa những gì vừa tạo thành `contract/meta.schema.json` + `contract/sheet-columns.md`
 - **Deliverable:** nơi lưu chạy được ngay (up tay 1 video mẫu vào inbox, điền 1 dòng Sheet) + hợp đồng v1 chốt — hai phía code theo nó
 
-### Phase 2 — Extension ingest (TypeScript, Manifest V3)
+### Phase 2 — Extension ingest (TypeScript, Manifest V3) — ✅ XONG 17.08.2026
 - Nút 1-click trên trang video: bắt file video + title/description/tags/author + thumbnail
 - Up Drive (resumable upload qua `chrome.identity`), ghi dòng Sheet theo hợp đồng
 - **Deliverable:** xem video → 1 click → `video.mp4` + `thumb.jpg` + `meta.json` nằm đúng chỗ trên Drive, dòng NEW xuất hiện trong Sheet
