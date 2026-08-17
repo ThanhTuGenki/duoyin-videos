@@ -68,6 +68,27 @@ function bestVideoUrl(video: any): string {
   return pool[0]?.url ?? video?.playAddr?.[0]?.src ?? "";
 }
 
+/**
+ * Ảnh cover đúng khung hình, nét nhất.
+ *
+ * Đo thực tế trên card feed (17.08.2026), video gốc 2560x1440:
+ *   cover169BigUrlList[0]  1760x990  tỉ lệ 1.78  ← khớp khung, nét nhất
+ *   cover169UrlList[0]      540x304  tỉ lệ 1.78  ← đúng ảnh trang đang hiển thị
+ *   originCoverUrlList[0]   640x360  tỉ lệ 1.78
+ *   cover                   640x480  tỉ lệ 1.33  ← BỊ CẮT thành 4:3, đừng dùng
+ */
+function bestCover(v: any): string {
+  return (
+    v?.cover169BigUrlList?.[0] ??
+    v?.cover169UrlList?.[0] ??
+    v?.originCoverUrlList?.[0] ??
+    v?.originCover ??
+    v?.cover ??
+    v?.coverUrlList?.[0] ??
+    ""
+  );
+}
+
 function toMeta(a: any): Meta | null {
   if (!a?.awemeId) return null;
   const v = a.video ?? {};
@@ -81,7 +102,7 @@ function toMeta(a: any): Meta | null {
     comments: s.commentCount ?? 0,
     shares: s.shareCount ?? 0,
     durationSeconds: Math.round((v.duration ?? 0) / 1000),
-    cover: v.cover ?? v.coverUrlList?.[0] ?? v.originCoverUrlList?.[0] ?? "",
+    cover: bestCover(v),
     videoUrl: bestVideoUrl(v),
   };
 }
