@@ -31,11 +31,26 @@ DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1 |
 log "Cài gói hệ thống"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-# libxkbcommon0: VSR import qfluentwidgets → PySide6, thiếu là chết ngay (đã gặp 16.08)
+# libxkbcommon0 + bộ OpenGL (libegl1/libgl1/libopengl0/libglx0): VSR import
+# qfluentwidgets → PySide6, thiếu bất kỳ cái nào là chết ngay khi import
+# (libxkbcommon dính 16.08, libEGL dính 17.08 — mỗi image thiếu một kiểu)
 # libsndfile1 + ffmpeg: VoiceStudio bắt buộc
 apt-get install -y -qq --no-install-recommends \
-  git curl ffmpeg libsndfile1 libxkbcommon0 python3-venv build-essential unzip
+  git curl ffmpeg libsndfile1 libxkbcommon0 libegl1 libgl1 libopengl0 libglx0 \
+  python3-venv build-essential unzip
 ok "apt xong"
+
+# ── 1b. uv (quản lý Python — cần cho CẢ VSR lẫn VoiceStudio) ─────
+# VSR dùng f-string lồng nháy cùng loại (PEP 701) → BẮT BUỘC Python >= 3.12,
+# trong khi image chỉ có 3.10 (SyntaxError sttn_auto_inpaint.py, dính 17.08).
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v uv >/dev/null; then
+  log "Cài uv (pip, ghim 0.12.5)"
+  python3 -m pip install -q "uv==0.12.5"
+  command -v uv >/dev/null || die "Cài uv thất bại"
+fi
+ok "uv $(uv --version)"
+uv python install 3.12 >/dev/null 2>&1 || true
 
 # ── 2. rclone (đồng bộ Drive) ────────────────────────────────────
 if command -v rclone >/dev/null; then
@@ -52,16 +67,23 @@ fi
 log "Dựng video-subtitle-remover"
 [ -d "$VSR_DIR" ] || git clone --depth 1 https://github.com/YaoFANGUK/video-subtitle-remover.git "$VSR_DIR"
 cd "$VSR_DIR"
-[ -d venv_vsr ] || python3 -m venv venv_vsr
 VSR_PY="$VSR_DIR/venv_vsr/bin/python"
+# venv cũ tạo bằng Python <3.12 thì code VSR không chạy nổi — bỏ, tạo lại
+if [ -x "$VSR_PY" ] && ! "$VSR_PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)' 2>/dev/null; then
+  warn "venv_vsr dùng Python <3.12 — tạo lại (VSR cần 3.12, PEP 701)"
+  rm -rf venv_vsr
+fi
+[ -d venv_vsr ] || uv venv --python 3.12 venv_vsr
 
 if "$VSR_PY" -c "import torch" 2>/dev/null; then
   ok "torch đã có: $("$VSR_PY" -c 'import torch;print(torch.__version__)')"
 else
-  "$VSR_PY" -m pip install -q --upgrade pip
   # 2.3.1+cu118 là bản Dockerfile của VSR dùng cho CUDA 11.8
-  "$VSR_PY" -m pip install -q torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu118
-  "$VSR_PY" -m pip install -q -r requirements.txt
+  uv pip install -q --python "$VSR_PY" torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu118
+  uv pip install -q --python "$VSR_PY" -r requirements.txt
+  # torch cu118 build với numpy 1.x — numpy 2.x của requirements làm torch
+  # chết khi import; ghim lại combo đã kiểm chứng trên container 16.08
+  uv pip install -q --python "$VSR_PY" "numpy==1.26.4"
 fi
 
 # paddlepaddle-gpu KHÔNG có trên PyPI — phải lấy từ index riêng của Paddle.
@@ -79,9 +101,16 @@ fi
 # Lỗi đã gặp 16.08: scipy mới cần numpy>=2 trong khi torch cu118 kéo numpy 1.x
 if ! "$VSR_PY" -c "from scipy import interpolate" 2>/dev/null; then
   warn "scipy lệch numpy — ghim scipy==1.13.1"
-  "$VSR_PY" -m pip install -q "scipy==1.13.1"
+  uv pip install -q --python "$VSR_PY" "scipy==1.13.1"
 fi
 "$VSR_PY" -c "from scipy import interpolate; import torch; print('  VSR ok · torch', torch.__version__, '· cuda', torch.cuda.is_available())"
+
+# Smoke test THẬT: compile toàn bộ code VSR bằng đúng python của venv.
+# Import torch/scipy suông không đủ — lỗi Python-3.12-only-syntax (PEP 701)
+# đã lọt qua kiểm tra cũ và chỉ nổ khi worker chạy job đầu tiên (17.08).
+"$VSR_PY" -m compileall -q "$VSR_DIR/backend" \
+  || die "Code VSR không compile được với $("$VSR_PY" --version) — kiểm tra phiên bản Python"
+ok "VSR backend compile sạch với $("$VSR_PY" --version)"
 
 # ── 4. VoiceStudio (chỉ backend API, KHÔNG build frontend) ───────
 log "Dựng VoiceStudio (API-only)"
@@ -207,10 +236,19 @@ fi
 if rclone listremotes 2>/dev/null | grep -q '^gdrive-user:'; then
   ok "remote gdrive-user đã có"
 elif [ -f "$ROOT/secrets/rclone-user-token.json" ]; then
+  # Ghi thẳng block config — KHÔNG dùng `rclone config create`: wizard của nó
+  # hỏi tương tác (Shared Drive?...) và treo vĩnh viễn khi stdin là /dev/null
+  # (đã dính 17.08 trên 3090).
   log "Tạo remote gdrive-user từ token trong secrets"
-  rclone config create gdrive-user drive scope drive \
-    root_folder_id "14sfsTkv-k8S2rqR5kFj6EoVr_RBqXsjh" \
-    token "$(cat "$ROOT/secrets/rclone-user-token.json")" >/dev/null
+  mkdir -p "$ROOT/.config/rclone"
+  {
+    echo ""
+    echo "[gdrive-user]"
+    echo "type = drive"
+    echo "scope = drive"
+    echo "root_folder_id = 14sfsTkv-k8S2rqR5kFj6EoVr_RBqXsjh"
+    echo "token = $(cat "$ROOT/secrets/rclone-user-token.json")"
+  } >> "$ROOT/.config/rclone/rclone.conf"
   ok "remote gdrive-user xong"
 else
   warn "CHƯA có remote ghi Drive (gdrive-user) — worker sẽ lỗi ở bước upload."
