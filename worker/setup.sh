@@ -98,16 +98,24 @@ mkdir -p "$VS_DATA"
 cat > "$ROOT/start_voicestudio.sh" <<EOF
 #!/usr/bin/env bash
 # Bật VoiceStudio API ở cổng 3900 (chạy nền, log ra /tmp/voicestudio.log)
+#
+# BẢO MẬT: chỉ bind loopback. VoiceStudio KHÔNG có xác thực (tài liệu của họ
+# nói rõ), mà container thuê có IP public — bind 0.0.0.0 là phơi GPU + toàn bộ
+# file cho bất kỳ ai quét trúng cổng. docker-compose gốc của họ bind 0.0.0.0
+# được là vì Docker map ra 127.0.0.1 ở phía host; ở đây không có lớp đó.
+# Spike và worker đều chạy TRÊN container nên 127.0.0.1 là đủ.
+# Muốn mở web UI từ máy local thì dùng SSH tunnel:
+#     ssh -p <PORT> -L 3900:127.0.0.1:3900 root@<IP>
 cd "$VS_DIR"
-export OMNIVOICE_SERVER_MODE=1          # nới cổng chặn loopback cho môi trường headless
-export OMNIVOICE_BIND_HOST=0.0.0.0
+export OMNIVOICE_SERVER_MODE=1          # nới cổng chặn origin cho môi trường headless
+export OMNIVOICE_BIND_HOST=127.0.0.1
 export OMNIVOICE_DATA_DIR="$VS_DATA"
 export HF_HOME="$VS_DATA/huggingface"
 export PYTHONPATH="$VS_DIR/backend"
 export PYTHONUNBUFFERED=1
 for pid in \$(pgrep -f 'uvicorn backend.main:app'); do kill "\$pid" 2>/dev/null || true; done
 sleep 1
-setsid nohup "$VS_PY" -m uvicorn backend.main:app --host 0.0.0.0 --port 3900 \\
+setsid nohup "$VS_PY" -m uvicorn backend.main:app --host 127.0.0.1 --port 3900 \\
   > /tmp/voicestudio.log 2>&1 < /dev/null &
 echo "VoiceStudio đang khởi động (pid \$!) — theo dõi: tail -f /tmp/voicestudio.log"
 EOF

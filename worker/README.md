@@ -39,6 +39,22 @@ scp -P <PORT> root@<IP>:/root/spike_out/dubbed_vi.mp3 ~/Desktop/
 Script cố tình in ra **thứ máy chủ thực sự trả về** thay vì giả định hợp đồng —
 bước nào lệch tài liệu thì thấy ngay chứ không phải đoán.
 
+## Bảo mật: API chỉ mở ở loopback
+
+VoiceStudio **không có xác thực** (tài liệu của chính họ nói vậy), mà container
+thuê có IP public. Vì thế `start_voicestudio.sh` chỉ bind `127.0.0.1:3900` —
+spike và worker đều chạy trên container nên không cần mở ra ngoài.
+
+Muốn mở web UI của VoiceStudio từ máy local thì dùng SSH tunnel, đừng đổi bind:
+
+```bash
+ssh -p <PORT> -L 3900:127.0.0.1:3900 root@<IP>
+# rồi mở http://127.0.0.1:3900 trên máy mình
+```
+
+(Lưu ý: `setup.sh` bỏ qua build frontend nên web UI có thể không hiển thị —
+API vẫn đầy đủ. Cần UI thì build thêm bằng bun.)
+
 ## Giọng mặc định
 
 `assets/voice/MinhQuanVoice.mp3` (9.67s, 128kbps mono) + `MinhQuanVoice.txt` (transcript).
