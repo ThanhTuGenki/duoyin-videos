@@ -21,7 +21,6 @@ import subprocess
 import sys
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,10 +28,9 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from wcontract import (  # noqa: E402
-    COL_INDEX, STATUS_DONE, STATUS_DOWNLOADING, STATUS_ERROR, STATUS_MUXING,
-    STATUS_NEW, STATUS_PROCESSING, STATUS_UPLOADING, Job, audio_ext,
-    has_enough_speech, mux_command, parse_translated, pick_new_jobs,
-    pick_stale_jobs, reclaim_decision, vsr_command,
+    COL_INDEX, STATUS_CLEANING, STATUS_DONE, STATUS_DUBBED, STATUS_DUBBING,
+    STATUS_ERROR, Job, audio_ext, has_enough_speech, mux_command,
+    parse_translated, pick_jobs, pick_stale_jobs, reclaim_decision, vsr_command,
 )
 
 # ── Cấu hình (env override được) ─────────────────────────────────
@@ -288,90 +286,141 @@ def vsr_remove_subs(video_in: Path, video_out: Path) -> None:
         raise JobError("VSR không tạo ra file kết quả hợp lệ")
 
 
-# ── Xử lý một job ────────────────────────────────────────────────
+# ── Giai đoạn A: dub (NEW → DUBBING → DUBBED) ────────────────────
 
-def process(ws, job: Job) -> None:
+def process_dub(ws, job: Job) -> None:
+    """Dịch + lồng tiếng. Đầu ra Drive: output/<id>/audio_vi.wav (nguyên liệu
+    cho giai đoạn VSR) + <id>_preview.mp4 (video GỐC còn sub + tiếng Việt,
+    để duyệt giọng/bản dịch TRƯỚC khi tốn tiền VSR)."""
     t0 = time.time()
     job_dir = WORK_DIR / job.id
     try:
-        set_status(ws, job, STATUS_DOWNLOADING)
+        set_status(ws, job, STATUS_DUBBING)
         video = rclone_download(job.drive_folder_id, job_dir)
         duration = video_duration(video)
+        sheet_update(ws, job.row_number, {"duration": str(int(duration))})
 
-        set_status(ws, job, STATUS_PROCESSING, duration=str(int(duration)))
         profile_id = vs_ensure_profile(job.voice)
-        clean = job_dir / "clean.mp4"
-        # Song song: VSR (subprocess, GPU) ∥ dub (REST). Đã đo VRAM đủ cho cả hai.
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            f_vsr = pool.submit(vsr_remove_subs, video, clean)
-            f_dub = pool.submit(vs_dub, video, job.translation_mode, profile_id)
-            audio_blob = f_dub.result()
-            f_vsr.result()
+        audio_blob = vs_dub(video, job.translation_mode, profile_id)
 
-        set_status(ws, job, STATUS_MUXING)
-        dubbed = job_dir / f"dubbed.{audio_ext(audio_blob)}"
+        dubbed = job_dir / f"audio_vi.{audio_ext(audio_blob)}"
         dubbed.write_bytes(audio_blob)
-        final = job_dir / f"{job.id}_vi.mp4"
-        run(mux_command(str(clean), str(dubbed), str(final)), timeout=1800)
+        preview = job_dir / f"{job.id}_preview.mp4"
+        run(mux_command(str(video), str(dubbed), str(preview)), timeout=1800)
 
-        set_status(ws, job, STATUS_UPLOADING)
-        link = rclone_upload(final, job.id)
+        rclone_upload(dubbed, job.id)
+        link = rclone_upload(preview, job.id)
         elapsed = int(time.time() - t0)
-        set_status(ws, job, STATUS_DONE, output_link=link, process_time=str(elapsed), error="")
-        notify(f"✅ {job.id} xong ({elapsed}s): {job.title[:60]}")
-        shutil.rmtree(job_dir, ignore_errors=True)  # dọn đĩa; thành phẩm đã lên Drive
+        set_status(ws, job, STATUS_DUBBED, output_link=link, process_time=str(elapsed), error="")
+        notify(f"🎙️ {job.id} dub xong ({elapsed}s): {job.title[:60]}")
+        shutil.rmtree(job_dir, ignore_errors=True)
     except JobError as e:
         set_status(ws, job, STATUS_ERROR, error=str(e)[:300])
-        notify(f"🚨 {job.id} lỗi: {e}")
-    except Exception as e:  # lỗi không lường — vẫn không được làm sập vòng lặp
+        notify(f"🚨 {job.id} lỗi dub: {e}")
+    except Exception as e:  # lỗi không lường — không được làm sập vòng lặp
         traceback.print_exc()
         set_status(ws, job, STATUS_ERROR, error=f"Lỗi hệ thống: {e}"[:300])
         notify(f"🚨 {job.id} lỗi hệ thống: {e}")
 
 
+# ── Giai đoạn B: vsr (DUBBED → CLEANING → DONE) ──────────────────
+
+def rclone_download_audio(job_id: str, dest: Path) -> Path:
+    """Kéo audio_vi.* từ output/<id>/ (giai đoạn dub đã đẩy lên)."""
+    run(["rclone", "copy", f"{READ_REMOTE}:output/{job_id}/", str(dest),
+         "--include", "audio_vi.*"], timeout=1800)
+    for f in dest.glob("audio_vi.*"):
+        return f
+    raise JobError(f"output/{job_id}/ không có audio_vi.* — job chưa qua giai đoạn dub?")
+
+
+def process_vsr(ws, job: Job) -> None:
+    """Xóa hardsub rồi ghép với audio đã dub → thành phẩm <id>_vi.mp4."""
+    t0 = time.time()
+    job_dir = WORK_DIR / job.id
+    try:
+        set_status(ws, job, STATUS_CLEANING)
+        video = rclone_download(job.drive_folder_id, job_dir)
+        dubbed = rclone_download_audio(job.id, job_dir)
+
+        clean = job_dir / "clean.mp4"
+        vsr_remove_subs(video, clean)
+
+        final = job_dir / f"{job.id}_vi.mp4"
+        run(mux_command(str(clean), str(dubbed), str(final)), timeout=1800)
+
+        link = rclone_upload(final, job.id)
+        elapsed = int(time.time() - t0)
+        set_status(ws, job, STATUS_DONE, output_link=link, process_time=str(elapsed), error="")
+        notify(f"✅ {job.id} HOÀN CHỈNH ({elapsed}s): {job.title[:60]}")
+        shutil.rmtree(job_dir, ignore_errors=True)
+    except JobError as e:
+        set_status(ws, job, STATUS_ERROR, error=str(e)[:300])
+        notify(f"🚨 {job.id} lỗi VSR: {e}")
+    except Exception as e:
+        traceback.print_exc()
+        set_status(ws, job, STATUS_ERROR, error=f"Lỗi hệ thống: {e}"[:300])
+        notify(f"🚨 {job.id} lỗi hệ thống: {e}")
+
+
+def process(ws, job: Job) -> None:
+    """Chọn giai đoạn theo status hiện tại của dòng."""
+    current = job.raw[COL_INDEX["status"]].strip().upper()
+    if current == STATUS_DUBBED:
+        process_vsr(ws, job)
+    else:
+        process_dub(ws, job)
+
+
 # ── Health check + vòng lặp chính ────────────────────────────────
 
-def health_check() -> None:
+def health_check(stage: str) -> None:
+    """Chỉ kiểm những gì stage này thật sự cần — VSR hỏng không chặn stage dub."""
     problems = []
-    try:
-        requests.get(f"{VS_API}/health", timeout=10).raise_for_status()
-    except requests.RequestException:
-        problems.append(f"VoiceStudio API ({VS_API}) không phản hồi — chạy /root/start_voicestudio.sh")
-    if not Path(VSR_PY).exists():
-        problems.append(f"Không thấy VSR tại {VSR_PY} — chạy worker/setup.sh")
     if not Path(SA_JSON).exists():
         problems.append(f"Thiếu service account {SA_JSON} — scp secrets/ lên")
+    if stage in ("dub", "all"):
+        try:
+            requests.get(f"{VS_API}/health", timeout=10).raise_for_status()
+        except requests.RequestException:
+            problems.append(f"VoiceStudio API ({VS_API}) không phản hồi — chạy /root/start_voicestudio.sh")
+    if stage in ("vsr", "all") and not Path(VSR_PY).exists():
+        problems.append(f"Không thấy VSR tại {VSR_PY} — chạy worker/setup.sh")
     if problems:
         sys.exit("Health check thất bại:\n  - " + "\n  - ".join(problems))
-    # Proxy dịch LLM: không bắt buộc (có fallback fast) nhưng cảnh báo sớm
-    try:
-        requests.get("http://127.0.0.1:8317/v1/models", timeout=10).raise_for_status()
-    except requests.RequestException:
-        log("! CLIProxyAPI không phản hồi — dịch sẽ fallback về fast. Bật: /root/start_cliproxy.sh")
+    if stage in ("dub", "all"):
+        # Proxy dịch LLM: không bắt buộc (có fallback fast) nhưng cảnh báo sớm
+        try:
+            requests.get("http://127.0.0.1:8317/v1/models", timeout=10).raise_for_status()
+        except requests.RequestException:
+            log("! CLIProxyAPI không phản hồi — dịch sẽ fallback về fast. Bật: /root/start_cliproxy.sh")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true", help="xử lý 1 lượt rồi thoát")
+    ap.add_argument("--stage", default=os.environ.get("WORKER_STAGE", "dub"),
+                    choices=["dub", "vsr", "all"],
+                    help="dub: NEW→DUBBED · vsr: DUBBED→DONE · all: cả hai")
     args = ap.parse_args()
 
-    health_check()
+    health_check(args.stage)
     ws = sheet_client()
-    log(f"Worker sẵn sàng — poll {POLL_SECONDS}s, sheet {SHEET_ID[:12]}…")
+    log(f"Worker stage={args.stage} — poll {POLL_SECONDS}s, sheet {SHEET_ID[:12]}…")
 
     # Đòi lại job kẹt ở trạng thái đang-xử-lý từ lần chạy trước (crash/mất
-    # mạng/container chết giữa chừng). Chạy lại từ đầu là an toàn (mọi bước
-    # idempotent); đếm số lần trong cột error, quá 2 lần thì dừng ở ERROR
-    # để job 'độc' không đốt tiền GPU vô hạn.
+    # mạng/container chết giữa chừng). Kẹt DUBBING → NEW; kẹt CLEANING →
+    # DUBBED (không dub lại). Quá 2 lần → ERROR để job 'độc' không đốt GPU.
     try:
         stale = pick_stale_jobs(ws.get_all_values())
         for job in stale:
-            status, err = reclaim_decision(job.raw[COL_INDEX["error"]])
+            current = job.raw[COL_INDEX["status"]]
+            status, err = reclaim_decision(job.raw[COL_INDEX["error"]], current)
             sheet_update(ws, job.row_number, {
                 "status": status, "error": err,
                 "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             })
-            log(f"[{job.id}] dở dang từ lần trước → {status} ({err[:50]})")
+            log(f"[{job.id}] dở dang ({current}) → {status} ({err[:50]})")
         if stale:
             notify(f"♻️ Đòi lại {len(stale)} job dở dang sau khởi động lại")
     except Exception as e:
@@ -380,7 +429,7 @@ def main() -> None:
     idle_reported = False
     while True:
         try:
-            jobs = pick_new_jobs(ws.get_all_values())
+            jobs = pick_jobs(ws.get_all_values(), args.stage)
         except Exception as e:
             log(f"Đọc Sheet lỗi (thử lại sau): {e}")
             time.sleep(POLL_SECONDS)
@@ -388,7 +437,7 @@ def main() -> None:
 
         if jobs:
             idle_reported = False
-            log(f"{len(jobs)} job NEW: {[j.id for j in jobs]}")
+            log(f"{len(jobs)} job chờ stage {args.stage}: {[j.id for j in jobs[:8]]}…")
             for job in jobs:
                 process(ws, job)
         elif not idle_reported:

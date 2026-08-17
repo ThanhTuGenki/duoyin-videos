@@ -137,17 +137,31 @@ Lưu ý khác:
 - Dùng quota subscription qua proxy là vùng xám ToS — phương án thay thế:
   API key Gemini Flash trả phí, đổi mỗi `base_url`/`api_key`.
 
-## Phase 4 — worker (đã viết, chờ chạy thử end-to-end)
+## Phase 4 — worker 2 giai đoạn (dub đã chạy thật 17.08)
 
-`worker.py` khép kín dây chuyền: poll Sheet 30s → dòng NEW → rclone kéo từ
-inbox → **VSR ∥ VoiceStudio song song** → ffmpeg mux → đẩy `output/<id>/` →
-ghi link + process_time vào Sheet → Telegram (nếu cấu hình).
+Dub và xóa sub **tách container riêng**. Lý do: dựng VSR hay vấp môi trường
+(Python 3.12, OpenGL, paddle từ mirror TQ), tách ra thì nhánh dub chạy được
+ngay; thêm nữa preview cho phép **duyệt trước khi tốn tiền VSR**.
 
 ```bash
-bash /root/start_worker.sh            # chạy nền, log /tmp/worker.log
-# hoặc chạy 1 lượt để thử:
-/root/worker-venv/bin/python /root/duoyin-videos/worker/worker.py --once
+bash /root/start_worker.sh dub     # NEW → DUBBING → DUBBED  (máy này)
+bash /root/start_worker.sh vsr     # DUBBED → CLEANING → DONE (container khác)
+bash /root/start_worker.sh all     # cả hai trên cùng máy
+# chạy 1 lượt để thử:
+/root/worker-venv/bin/python /root/duoyin-videos/worker/worker.py --stage dub --once
 ```
+
+Đầu ra mỗi giai đoạn (Drive `output/<id>/`):
+
+| Giai đoạn | File | Dùng để |
+|---|---|---|
+| dub | `audio_vi.wav` | nguyên liệu cho stage vsr |
+| dub | `<id>_preview.mp4` | video gốc + tiếng Việt — **duyệt giọng/bản dịch** |
+| vsr | `<id>_vi.mp4` | thành phẩm: sạch sub + tiếng Việt |
+
+Số đo thật (RTX 3090, video ~118s): dub **155s/video** (TTS 80s + tải/mux/upload
+52MB). `health_check` chỉ kiểm thứ stage đó cần — VSR chưa dựng xong không
+chặn stage dub.
 
 Cấu trúc:
 - `wcontract.py` — pure functions theo hợp đồng (21 unit tests, chạy local:

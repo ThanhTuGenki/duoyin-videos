@@ -55,15 +55,41 @@ Thành phẩm: `output/<id>/no_sub_vi.mp4` (+ log nếu có).
 | L | `process_time` | Worker | Tổng thời gian xử lý (giây) — để tính chi phí ⚡ |
 | M | `updated_at` | Worker | ISO 8601 |
 
-## Vòng đời status
+## Vòng đời status — 2 giai đoạn độc lập
+
+Dub và xóa sub chạy **container riêng** (quyết định 17.08: dựng VSR hay vấp môi
+trường, tách ra để nhánh dub không bị chặn).
 
 ```
-NEW → DOWNLOADING → PROCESSING → MUXING → UPLOADING → DONE
-                        └──────────── lỗi ở bất kỳ đâu ────→ ERROR (+ cột error)
+GIAI ĐOẠN A — dub (worker --stage dub)
+  NEW ──► DUBBING ──► DUBBED
+                        └─ Drive output/<id>/: audio_vi.wav + <id>_preview.mp4
+
+GIAI ĐOẠN B — xóa sub (worker --stage vsr)
+  DUBBED ──► CLEANING ──► DONE
+                            └─ Drive output/<id>/: <id>_vi.mp4  ← thành phẩm
+
+  lỗi ở bất kỳ đâu → ERROR (+ message ở cột error)
 ```
 
-- Worker chỉ nhận dòng `status=NEW` có đủ `id` + `drive_folder_link`, folder chứa `video.mp4` + `meta.json` hợp lệ.
-- Muốn chạy lại dòng lỗi: sửa tay `status` về `NEW`.
+| Status | Nghĩa | Ai xử lý |
+|---|---|---|
+| `NEW` | chờ dub | worker stage dub |
+| `DUBBING` | đang dịch + lồng tiếng | — |
+| `DUBBED` | có audio Việt + preview, **duyệt được rồi** | worker stage vsr |
+| `CLEANING` | đang xóa sub + ghép thành phẩm | — |
+| `DONE` | thành phẩm hoàn chỉnh | — |
+| `ERROR` | lỗi, xem cột error | bạn quyết |
+
+**Preview để làm gì:** `<id>_preview.mp4` là video **gốc (còn sub Trung) + tiếng
+Việt** — nghe/duyệt giọng và bản dịch **trước** khi chạy VSR (phần đắt nhất,
+~2.4× thời lượng video). Bản dịch dở thì khỏi tốn tiền xóa sub.
+
+Quy tắc chạy lại:
+- Worker chỉ nhận dòng đúng status đầu vào của stage, đủ `id` + `drive_folder_link`.
+- Lỗi "sạch" → sửa tay status về `NEW` (dub lại) hoặc `DUBBED` (chỉ VSR lại).
+- Crash/mất mạng: worker khởi động lại **tự đòi**: kẹt `DUBBING`→`NEW`,
+  kẹt `CLEANING`→`DUBBED` (không dub lại). Quá 2 lần tự chạy lại → dừng ở `ERROR`.
 
 ## Quy tắc đổi hợp đồng
 

@@ -15,13 +15,18 @@ COLUMNS = [
 ]
 COL_INDEX = {name: i for i, name in enumerate(COLUMNS)}
 
+# Vòng đời 2 giai đoạn (thiết kế 17.08, tách dub và VSR chạy container riêng):
+#   Giai đoạn A (dub): NEW → DUBBING → DUBBED   (audio_vi.wav + preview lên Drive)
+#   Giai đoạn B (vsr): DUBBED → CLEANING → DONE (video sạch sub + tiếng Việt)
 STATUS_NEW = "NEW"
-STATUS_DOWNLOADING = "DOWNLOADING"
-STATUS_PROCESSING = "PROCESSING"
-STATUS_MUXING = "MUXING"
-STATUS_UPLOADING = "UPLOADING"
+STATUS_DUBBING = "DUBBING"
+STATUS_DUBBED = "DUBBED"
+STATUS_CLEANING = "CLEANING"
 STATUS_DONE = "DONE"
 STATUS_ERROR = "ERROR"
+
+# Trạng thái của thiết kế cũ (1 giai đoạn) — chỉ còn dùng để reclaim dòng cũ
+LEGACY_IN_PROGRESS = {"DOWNLOADING", "PROCESSING", "MUXING", "UPLOADING"}
 
 VALID_TRANSLATION_MODES = {"fast", "cinematic", "autofit"}
 
@@ -59,17 +64,31 @@ def parse_row(row_number: int, row: list[str]) -> Job:
     )
 
 
-def pick_new_jobs(rows: list[list[str]]) -> list[Job]:
-    """Chọn các dòng NEW hợp lệ (đủ id + drive_folder_link). Dòng 1 là header."""
+# stage → status đầu vào mà worker của stage đó nhận
+STAGE_INPUT = {
+    "dub": {STATUS_NEW},
+    "vsr": {STATUS_DUBBED},
+    "all": {STATUS_NEW, STATUS_DUBBED},
+}
+
+
+def pick_jobs(rows: list[list[str]], stage: str = "dub") -> list[Job]:
+    """Chọn các dòng hợp lệ cho stage (đủ id + drive_folder_link). Dòng 1 là header."""
+    wanted = STAGE_INPUT[stage]
     jobs = []
     for i, row in enumerate(rows[1:], start=2):
         padded = list(row) + [""] * (len(COLUMNS) - len(row))
-        if padded[COL_INDEX["status"]].strip().upper() != STATUS_NEW:
+        if padded[COL_INDEX["status"]].strip().upper() not in wanted:
             continue
         job = parse_row(i, row)
         if job.id and job.drive_folder_id:
             jobs.append(job)
     return jobs
+
+
+def pick_new_jobs(rows: list[list[str]]) -> list[Job]:
+    """Giữ tương thích: các dòng NEW (stage dub)."""
+    return pick_jobs(rows, "dub")
 
 
 def has_enough_speech(segments: list[dict], video_seconds: float,
@@ -146,7 +165,14 @@ def parse_translated(data, originals: list[dict]) -> tuple[list[dict], int]:
 
 # ── Đòi lại job dở dang khi worker khởi động lại ─────────────────
 
-IN_PROGRESS_STATUSES = {STATUS_DOWNLOADING, STATUS_PROCESSING, STATUS_MUXING, STATUS_UPLOADING}
+# Kẹt ở đâu → quay về status nào. Điểm ăn tiền của thiết kế 2 giai đoạn:
+# kẹt lúc đang CLEANING thì chỉ làm lại phần VSR (về DUBBED), KHÔNG dub lại.
+RECLAIM_TARGET = {
+    STATUS_DUBBING: STATUS_NEW,
+    STATUS_CLEANING: STATUS_DUBBED,
+    **{s: STATUS_NEW for s in LEGACY_IN_PROGRESS},
+}
+IN_PROGRESS_STATUSES = set(RECLAIM_TARGET)
 MAX_AUTO_RETRIES = 2
 _RETRY_PREFIX = "[auto-retry "
 
@@ -162,23 +188,24 @@ def retry_count(error_text: str) -> int:
         return 0
 
 
-def reclaim_decision(error_text: str) -> tuple[str, str]:
+def reclaim_decision(error_text: str, current_status: str = STATUS_DUBBING) -> tuple[str, str]:
     """Quyết định cho 1 dòng đang dở khi worker khởi động lại.
 
-    Chỉ gọi lúc KHỞI ĐỘNG: hệ chỉ có 1 worker nên dòng in-progress lúc đó
-    chắc chắn là xác chết của lần chạy trước (crash/mất mạng/container chết).
-    Chạy lại từ đầu an toàn: rclone idempotent, VoiceStudio cache prep theo
-    file, VSR/mux ghi đè. Nhưng phải đếm số lần — job 'độc' (video hỏng làm
-    sập worker) mà retry vô hạn thì đốt tiền GPU không hồi kết.
+    Chỉ gọi lúc KHỞI ĐỘNG: mỗi stage chỉ có 1 worker nên dòng in-progress lúc
+    đó chắc chắn là xác chết của lần chạy trước (crash/mất mạng/container chết).
+    Chạy lại là an toàn: rclone idempotent, VoiceStudio cache prep theo file,
+    VSR/mux ghi đè. Nhưng phải đếm số lần — job 'độc' (video hỏng làm sập
+    worker) mà retry vô hạn thì đốt tiền GPU không hồi kết.
 
     Trả (status_mới, error_mới).
     """
     n = retry_count(error_text)
+    target = RECLAIM_TARGET.get(current_status.strip().upper(), STATUS_NEW)
     if n >= MAX_AUTO_RETRIES:
         return STATUS_ERROR, (
             f"{_RETRY_PREFIX}{n}] Quá {MAX_AUTO_RETRIES} lần tự chạy lại sau crash — "
-            "cần xem tay. Muốn thử tiếp: xoá cột error rồi sửa status về NEW.")
-    return STATUS_NEW, f"{_RETRY_PREFIX}{n + 1}] tự chạy lại sau khi worker khởi động lại"
+            f"cần xem tay. Muốn thử tiếp: xoá cột error rồi sửa status về {target}.")
+    return target, f"{_RETRY_PREFIX}{n + 1}] tự chạy lại sau khi worker khởi động lại"
 
 
 def pick_stale_jobs(rows: list[list[str]]) -> list[Job]:

@@ -258,12 +258,15 @@ fi
 
 cat > "$ROOT/start_worker.sh" <<EOF
 #!/usr/bin/env bash
-# Bật worker (poll Sheet, xử lý job NEW). Log: /tmp/worker.log
+# Bật worker. Stage mặc định 'dub' (NEW→DUBBED); 'vsr' (DUBBED→DONE); 'all'.
+#   bash start_worker.sh          # dub
+#   bash start_worker.sh vsr      # xóa sub + ghép thành phẩm
+STAGE="\${1:-\${WORKER_STAGE:-dub}}"
 for pid in \$(pgrep -f 'worker-venv/bin/python.*worker.py'); do kill "\$pid" 2>/dev/null || true; done
 sleep 1
-setsid nohup "$WK_VENV/bin/python" "$ROOT/duoyin-videos/worker/worker.py" \\
+setsid nohup "$WK_VENV/bin/python" "$ROOT/duoyin-videos/worker/worker.py" --stage "\$STAGE" \\
   > /tmp/worker.log 2>&1 < /dev/null &
-echo "Worker đang chạy (pid \$!) — log: tail -f /tmp/worker.log"
+echo "Worker stage=\$STAGE đang chạy (pid \$!) — log: tail -f /tmp/worker.log"
 EOF
 chmod +x "$ROOT/start_worker.sh"
 

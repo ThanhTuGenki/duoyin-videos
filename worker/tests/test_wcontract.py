@@ -165,3 +165,44 @@ class TestReclaim:
         assert retry_count("Video không có lời thoại") == 0
         assert retry_count("") == 0
         assert retry_count("[auto-retry rác]") == 0
+
+
+class TestTwoStage:
+    """Thiết kế 2 giai đoạn 17.08: dub và VSR chạy container riêng."""
+
+    def test_stage_dub_chi_nhan_new(self):
+        from wcontract import pick_jobs
+        rows = [HEADER, make_row(id="dy-a", status="NEW"), make_row(id="dy-b", status="DUBBED")]
+        assert [j.id for j in pick_jobs(rows, "dub")] == ["dy-a"]
+
+    def test_stage_vsr_chi_nhan_dubbed(self):
+        from wcontract import pick_jobs
+        rows = [HEADER, make_row(id="dy-a", status="NEW"), make_row(id="dy-b", status="DUBBED")]
+        assert [j.id for j in pick_jobs(rows, "vsr")] == ["dy-b"]
+
+    def test_stage_all_nhan_ca_hai(self):
+        from wcontract import pick_jobs
+        rows = [HEADER, make_row(id="dy-a", status="NEW"), make_row(id="dy-b", status="DUBBED")]
+        assert [j.id for j in pick_jobs(rows, "all")] == ["dy-a", "dy-b"]
+
+    def test_ket_dubbing_ve_new(self):
+        from wcontract import reclaim_decision
+        status, _ = reclaim_decision("", "DUBBING")
+        assert status == "NEW"
+
+    def test_ket_cleaning_ve_dubbed_khong_dub_lai(self):
+        from wcontract import reclaim_decision
+        status, _ = reclaim_decision("", "CLEANING")
+        assert status == "DUBBED"  # chỉ làm lại phần VSR
+
+    def test_status_cu_legacy_van_reclaim_ve_new(self):
+        from wcontract import reclaim_decision
+        for legacy in ("DOWNLOADING", "PROCESSING", "MUXING", "UPLOADING"):
+            status, _ = reclaim_decision("", legacy)
+            assert status == "NEW"
+
+    def test_pick_stale_bat_ca_dubbing_va_cleaning(self):
+        from wcontract import pick_stale_jobs
+        rows = [HEADER, make_row(id="dy-a", status="DUBBING"), make_row(id="dy-b", status="CLEANING"),
+                make_row(id="dy-c", status="DUBBED")]
+        assert [j.id for j in pick_stale_jobs(rows)] == ["dy-a", "dy-b"]
