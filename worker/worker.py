@@ -8,7 +8,8 @@ Chạy trên container GPU:
 Mọi hợp đồng API bên dưới đều đã kiểm chứng bằng spike 17.08 (không đoán):
 upload field 'video' + chờ SSE ready; transcribe tự cài model khi 409;
 translate qua khoá 'translated' + fallback cinematic→fast; generate chạy nền
-phải chờ task; download-audio trả WAV.
+phải chờ task; /dub/download trả VIDEO đã ghép (include_tracks=vi) nên worker
+không tự ffmpeg mux; /dub/srt cho phụ đề tiếng Việt rời.
 """
 
 from __future__ import annotations
@@ -31,8 +32,8 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from wcontract import (  # noqa: E402
     COL_INDEX, STATUS_CLEANING, STATUS_DONE, STATUS_DUBBED, STATUS_DUBBING,
-    STATUS_ERROR, Job, audio_ext, has_enough_speech, mux_command,
-    parse_translated, pick_jobs, pick_stale_jobs, reclaim_decision, vsr_command,
+    STATUS_ERROR, Job, has_enough_speech, parse_translated, pick_jobs,
+    pick_stale_jobs, reclaim_decision, vsr_command,
 )
 
 # ── Cấu hình (env override được) ─────────────────────────────────
@@ -50,12 +51,16 @@ POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
 # Số video dub đồng thời. TTS vẫn xếp hàng trên GPU, nhưng tải/dịch/mux/upload
 # (~75s trong 155s mỗi job, đo trên 3090) chồng lên nhau được → ~1.6-2x throughput.
 DUB_CONCURRENCY = int(os.environ.get("DUB_CONCURRENCY", "3"))
-# Cách xử lý câu dịch dài hơn khung thời gian gốc. Mặc định của VoiceStudio là
-# "concise" — KHÔNG nén audio nhưng overflow thì CẮT CỨNG ở biên slot, đúng
-# triệu chứng "dừng ngang ở từ cuối cùng" (user báo 17.08).
-# Chỉ dùng được concise/strict_slot: smart_fit và stretch_video đổi timeline
-# VIDEO, mà ta ghép audio vào video GỐC nên sẽ lệch tiếng hình.
-TIMING_STRATEGY = os.environ.get("TIMING_STRATEGY", "concise")
+# Cách xử lý câu dịch dài hơn khung thời gian gốc.
+#   concise (mặc định của VoiceStudio) — overflow thì CẮT CỨNG ở biên slot,
+#     đúng triệu chứng "dừng ngang ở từ cuối cùng" user báo 17.08. Đo được
+#     80-100% câu lố khung, rate_ratio tới 2.2 → gần như câu nào cũng bị cắt.
+#   smart_fit — chia đôi gánh nặng: tăng tốc audio nhẹ (<=1.2x) + làm chậm
+#     video nhẹ (<=2.0x), phần lố còn lại mới trim. Dùng được vì giờ ta lấy
+#     VIDEO do VoiceStudio ghép (không tự mux vào video gốc nữa).
+#   stretch_video — audio luôn 1.0x nhưng KHÔNG có bản ghi cue đã khớp nên
+#     file .srt sẽ lệch khỏi video; tránh vì user cần .srt dùng ở CapCut.
+TIMING_STRATEGY = os.environ.get("TIMING_STRATEGY", "smart_fit")
 # Khoản dư (giây) được thấm vào khoảng lặng trước khi hard-trim ra tay.
 OVERFLOW_BUDGET_S = float(os.environ.get("OVERFLOW_BUDGET_S", "1.5"))
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -303,10 +308,30 @@ def vs_dub(video: Path, quality: str, profile_id: str) -> bytes:
     if task:
         vs_wait_task(task, "TTS")
 
-    r = requests.get(f"{VS_API}/dub/download-audio/{vs_job}", timeout=1800)
-    if not r.ok or len(r.content) < 10_000:
-        raise JobError(f"Tải audio thất bại HTTP {r.status_code}, {len(r.content)} bytes")
+    return vs_job
+
+
+def vs_fetch_video(vs_job: str) -> bytes:
+    """Lấy VIDEO đã lồng tiếng do chính VoiceStudio ghép.
+
+    Đo thật 17.08: include_tracks=vi cho đúng 1 track audio tiếng Việt
+    (h264 + aac), preserve_bg giữ nhạc nền. Nhờ lấy video thay vì audio, ta
+    KHÔNG phải tự ffmpeg mux nữa, và các chế độ timing đổi timeline video
+    (smart_fit) dùng được — đó là cách chữa gốc lỗi cắt ngang câu.
+    """
+    r = requests.get(f"{VS_API}/dub/download/{vs_job}", timeout=3600,
+                     params={"include_tracks": "vi", "default_track": "vi",
+                             "preserve_bg": "true", "burn_subs": "false"})
+    if not r.ok or len(r.content) < 100_000:
+        raise JobError(f"Tải video dub thất bại HTTP {r.status_code}, {len(r.content)} bytes")
     return r.content
+
+
+def vs_fetch_srt(vs_job: str) -> str:
+    """Phụ đề tiếng Việt dạng file rời (dùng trong CapCut/chương trình khác).
+    Không nướng vào hình — quyết định của user 17.08."""
+    r = requests.get(f"{VS_API}/dub/srt/{vs_job}", timeout=600)
+    return r.text if r.ok and r.text.strip() else ""
 
 
 # ── Nhánh hình (VSR) ─────────────────────────────────────────────
@@ -320,9 +345,15 @@ def vsr_remove_subs(video_in: Path, video_out: Path) -> None:
 # ── Giai đoạn A: dub (NEW → DUBBING → DUBBED) ────────────────────
 
 def process_dub(ws, job: Job) -> None:
-    """Dịch + lồng tiếng. Đầu ra Drive: output/<id>/audio_vi.wav (nguyên liệu
-    cho giai đoạn VSR) + <id>_preview.mp4 (video GỐC còn sub + tiếng Việt,
-    để duyệt giọng/bản dịch TRƯỚC khi tốn tiền VSR)."""
+    """Dịch + lồng tiếng, lấy VIDEO do VoiceStudio tự ghép.
+
+    Đầu ra Drive output/<id>/:
+      <id>_dubbed.mp4 — video (còn sub Trung) + tiếng Việt. Vừa là bản duyệt,
+                        vừa là đầu vào cho giai đoạn VSR.
+      <id>_vi.srt     — phụ đề tiếng Việt rời (dùng ở CapCut nếu muốn).
+    Không tự ffmpeg mux nữa: VoiceStudio ghép tốt hơn và giữ được các chế độ
+    timing đổi timeline video.
+    """
     t0 = time.time()
     job_dir = WORK_DIR / job.id
     try:
@@ -332,15 +363,18 @@ def process_dub(ws, job: Job) -> None:
         sheet_update(ws, job.row_number, {"duration": str(int(duration))})
 
         profile_id = vs_ensure_profile(job.voice)
-        audio_blob = vs_dub(video, job.translation_mode, profile_id)
+        vs_job = vs_dub(video, job.translation_mode, profile_id)
 
-        dubbed = job_dir / f"audio_vi.{audio_ext(audio_blob)}"
-        dubbed.write_bytes(audio_blob)
-        preview = job_dir / f"{job.id}_preview.mp4"
-        run(mux_command(str(video), str(dubbed), str(preview)), timeout=1800)
+        dubbed = job_dir / f"{job.id}_dubbed.mp4"
+        dubbed.write_bytes(vs_fetch_video(vs_job))
+        srt = vs_fetch_srt(vs_job)
+        if srt:
+            (job_dir / f"{job.id}_vi.srt").write_text(srt, encoding="utf-8")
+            rclone_upload(job_dir / f"{job.id}_vi.srt", job.id)
+        else:
+            log(f"  [{job.id}] không lấy được .srt (bỏ qua, không chặn)")
 
-        rclone_upload(dubbed, job.id)
-        link = rclone_upload(preview, job.id)
+        link = rclone_upload(dubbed, job.id)
         elapsed = int(time.time() - t0)
         set_status(ws, job, STATUS_DUBBED, output_link=link, process_time=str(elapsed), error="")
         notify(f"🎙️ {job.id} dub xong ({elapsed}s): {job.title[:60]}")
@@ -356,29 +390,32 @@ def process_dub(ws, job: Job) -> None:
 
 # ── Giai đoạn B: vsr (DUBBED → CLEANING → DONE) ──────────────────
 
-def rclone_download_audio(job_id: str, dest: Path) -> Path:
-    """Kéo audio_vi.* từ output/<id>/ (giai đoạn dub đã đẩy lên)."""
+def rclone_download_dubbed(job_id: str, dest: Path) -> Path:
+    """Kéo <id>_dubbed.mp4 mà giai đoạn dub đã đẩy lên output/<id>/."""
+    name = f"{job_id}_dubbed.mp4"
+    dest.mkdir(parents=True, exist_ok=True)
     run(["rclone", "copy", f"{READ_REMOTE}:output/{job_id}/", str(dest),
-         "--include", "audio_vi.*"], timeout=1800)
-    for f in dest.glob("audio_vi.*"):
-        return f
-    raise JobError(f"output/{job_id}/ không có audio_vi.* — job chưa qua giai đoạn dub?")
+         "--include", name], timeout=1800)
+    path = dest / name
+    if not path.exists():
+        raise JobError(f"output/{job_id}/ không có {name} — job chưa qua giai đoạn dub?")
+    return path
 
 
 def process_vsr(ws, job: Job) -> None:
-    """Xóa hardsub rồi ghép với audio đã dub → thành phẩm <id>_vi.mp4."""
+    """Xóa hardsub trên video ĐÃ lồng tiếng → thành phẩm <id>_vi.mp4.
+
+    Không cần ghép audio: VSR trích audio ra rồi merge lại bằng -acodec copy
+    (đã kiểm source), nên tiếng Việt đi qua nguyên vẹn không nén lại.
+    """
     t0 = time.time()
     job_dir = WORK_DIR / job.id
     try:
         set_status(ws, job, STATUS_CLEANING)
-        video = rclone_download(job.drive_folder_id, job_dir)
-        dubbed = rclone_download_audio(job.id, job_dir)
-
-        clean = job_dir / "clean.mp4"
-        vsr_remove_subs(video, clean)
+        dubbed = rclone_download_dubbed(job.id, job_dir)
 
         final = job_dir / f"{job.id}_vi.mp4"
-        run(mux_command(str(clean), str(dubbed), str(final)), timeout=1800)
+        vsr_remove_subs(dubbed, final)
 
         link = rclone_upload(final, job.id)
         elapsed = int(time.time() - t0)
@@ -472,20 +509,29 @@ def main() -> None:
             # mux/upload chồng nhau được. Stage vsr chạy tuần tự — VSR ăn GPU
             # nặng và liên tục, chạy song song chỉ tranh nhau chậm hơn.
             workers = DUB_CONCURRENCY if args.stage == "dub" else 1
-            log(f"{len(jobs)} job chờ stage {args.stage} (song song {workers}): "
-                f"{[j.id for j in jobs[:6]]}…")
+            # Chỉ làm MỘT lứa rồi đọc lại Sheet. Trước đây worker chụp cả hàng
+            # đợi vào bộ nhớ và chạy hết mới đọc lại → sửa translation_mode
+            # giữa batch không có tác dụng (dính 17.08: đổi 3 dòng sang autofit
+            # nhưng chúng vẫn dub bằng cinematic). Đọc lại từng lứa cũng nhặt
+            # được job mới thêm và khiến --once đúng nghĩa "một lứa".
+            batch = jobs[:workers]
+            log(f"{len(jobs)} job chờ stage {args.stage} · làm {len(batch)} "
+                f"(song song {workers}): {[j.id for j in batch]}")
             if workers <= 1:
-                for job in jobs:
+                for job in batch:
                     process(ws, job)
             else:
                 with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = {pool.submit(process, ws, job): job for job in jobs}
+                    futures = {pool.submit(process, ws, job): job for job in batch}
                     for fut in as_completed(futures):
                         try:
                             fut.result()
                         except Exception as e:  # process() đã tự bắt; đây là chốt cuối
                             log(f"[{futures[fut].id}] thoát bất thường: {e}")
-        elif not idle_reported:
+            if args.once:
+                return
+            continue  # đọc lại Sheet ngay, khỏi chờ POLL_SECONDS
+        if not idle_reported:
             log("Queue rỗng — chờ job mới")
             idle_reported = True
 
