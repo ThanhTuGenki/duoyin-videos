@@ -137,7 +137,45 @@ Lưu ý khác:
 - Dùng quota subscription qua proxy là vùng xám ToS — phương án thay thế:
   API key Gemini Flash trả phí, đổi mỗi `base_url`/`api_key`.
 
-## Phase 4 (chưa làm)
+## Phase 4 — worker (đã viết, chờ chạy thử end-to-end)
 
-Worker poll Sheet → rclone kéo video từ Drive → chạy song song VSR ∥ VoiceStudio
-→ ffmpeg mux → đẩy Drive → cập nhật status → Telegram báo.
+`worker.py` khép kín dây chuyền: poll Sheet 30s → dòng NEW → rclone kéo từ
+inbox → **VSR ∥ VoiceStudio song song** → ffmpeg mux → đẩy `output/<id>/` →
+ghi link + process_time vào Sheet → Telegram (nếu cấu hình).
+
+```bash
+bash /root/start_worker.sh            # chạy nền, log /tmp/worker.log
+# hoặc chạy 1 lượt để thử:
+/root/worker-venv/bin/python /root/duoyin-videos/worker/worker.py --once
+```
+
+Cấu trúc:
+- `wcontract.py` — pure functions theo hợp đồng (21 unit tests, chạy local:
+  `.venv-dev/bin/python -m pytest tests/`)
+- `worker.py` — vòng lặp + client mỏng (Sheet/rclone/VSR/VoiceStudio/ffmpeg)
+
+Hành vi có chủ đích:
+- **Video không lời thoại** (<3 đoạn hoặc nói <10% thời lượng) → ERROR với
+  message rõ, không tạo bản dub vô nghĩa (ca thật: video nhạc 助眠 17.08)
+- **Dịch fallback** `cinematic → fast` khi proxy LLM lỗi; cả hai fail hoặc
+  kết quả trông như chưa dịch (≥nửa số câu y hệt gốc) → ERROR
+- Lỗi 1 job không làm sập vòng lặp; job xong dọn sạch thư mục tạm
+- Chạy lại dòng lỗi: sửa tay status → NEW trên Sheet
+
+### Drive: đọc bằng SA, GHI bằng OAuth user (bắt buộc)
+
+Service account không có quota lưu trữ → không upload được
+(`storageQuotaExceeded`). Worker dùng 2 remote rclone:
+
+| Remote | Auth | Dùng cho |
+|---|---|---|
+| `gdrive` | service account (`sa.json`) | đọc inbox |
+| `gdrive-user` | OAuth cá nhân qua client chính chủ của rclone (app verified → refresh token KHÔNG dính hạn 7 ngày) | ghi output |
+
+Lấy token 1 lần trên máy local: `rclone authorize "drive"` → dán JSON vào
+`secrets/rclone-user-token.json` → scp `secrets/` lên → `setup.sh` tự tạo remote.
+
+### Telegram (tuỳ chọn)
+
+Đặt env `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` trước khi chạy worker.
+Không đặt thì thông báo chỉ ra log.

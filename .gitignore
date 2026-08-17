@@ -16,3 +16,4 @@ venv/
 
 # hệ điều hành
 .DS_Store
+.venv-dev/

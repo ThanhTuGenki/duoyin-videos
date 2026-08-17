@@ -189,6 +189,46 @@ echo "CLIProxyAPI đang khởi động (pid \$!) — log: /tmp/cliproxy.log"
 EOF
 chmod +x "$ROOT/start_cliproxy.sh"
 
+# ── 4d. Worker venv + remote ghi Drive ───────────────────────────
+log "Dựng worker venv"
+WK_VENV="$ROOT/worker-venv"
+if [ -x "$WK_VENV/bin/python" ] && "$WK_VENV/bin/python" -c "import gspread, requests" 2>/dev/null; then
+  ok "worker venv đã có"
+else
+  uv venv --python 3.12 "$WK_VENV" >/dev/null 2>&1 || python3 -m venv "$WK_VENV"
+  uv pip install -q --python "$WK_VENV/bin/python" "gspread==6.1.4" "requests==2.32.3" \
+    || "$WK_VENV/bin/pip" install -q "gspread==6.1.4" "requests==2.32.3"
+  ok "worker venv xong"
+fi
+
+# Remote GHI Drive (gdrive-user, OAuth cá nhân): service account KHÔNG có quota
+# lưu trữ nên không upload được (đã dính storageQuotaExceeded 17.08). Token
+# OAuth user lấy 1 lần bằng lệnh dưới, dán vào secrets/rclone-user-token.json.
+if rclone listremotes 2>/dev/null | grep -q '^gdrive-user:'; then
+  ok "remote gdrive-user đã có"
+elif [ -f "$ROOT/secrets/rclone-user-token.json" ]; then
+  log "Tạo remote gdrive-user từ token trong secrets"
+  rclone config create gdrive-user drive scope drive \
+    root_folder_id "14sfsTkv-k8S2rqR5kFj6EoVr_RBqXsjh" \
+    token "$(cat "$ROOT/secrets/rclone-user-token.json")" >/dev/null
+  ok "remote gdrive-user xong"
+else
+  warn "CHƯA có remote ghi Drive (gdrive-user) — worker sẽ lỗi ở bước upload."
+  warn "Trên MÁY LOCAL chạy:  rclone authorize \"drive\"  (mở browser, đăng nhập Google)"
+  warn "→ dán JSON token nó in ra vào secrets/rclone-user-token.json, scp secrets/ lên /root/, chạy lại setup.sh"
+fi
+
+cat > "$ROOT/start_worker.sh" <<EOF
+#!/usr/bin/env bash
+# Bật worker (poll Sheet, xử lý job NEW). Log: /tmp/worker.log
+for pid in \$(pgrep -f 'worker-venv/bin/python.*worker.py'); do kill "\$pid" 2>/dev/null || true; done
+sleep 1
+setsid nohup "$WK_VENV/bin/python" "$ROOT/duoyin-videos/worker/worker.py" \\
+  > /tmp/worker.log 2>&1 < /dev/null &
+echo "Worker đang chạy (pid \$!) — log: tail -f /tmp/worker.log"
+EOF
+chmod +x "$ROOT/start_worker.sh"
+
 # ── 5. Script khởi động VoiceStudio ──────────────────────────────
 cat > "$ROOT/start_voicestudio.sh" <<EOF
 #!/usr/bin/env bash
