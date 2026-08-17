@@ -99,30 +99,38 @@ fi
 ok "uv $(uv --version)"
 
 VS_PY="$VS_DIR/.venv/bin/python"
-# venv cũ có thể đã lỡ tạo bằng 3.10 — bỏ đi nếu không đạt yêu cầu
+# venv cũ có thể đã lỡ tạo bằng 3.10, hoặc chứa torch từ index sai — bỏ đi
 if [ -x "$VS_PY" ] && ! "$VS_PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
   warn "venv cũ dùng Python <3.11 — tạo lại"
   rm -rf "$VS_DIR/.venv"
 fi
-if [ ! -x "$VS_PY" ]; then
-  uv python install 3.12
-  uv venv --python 3.12 "$VS_DIR/.venv"
-fi
-ok "VoiceStudio python $("$VS_PY" --version)"
 
 if "$VS_PY" -c "import torch, fastapi" 2>/dev/null; then
   ok "VoiceStudio deps đã có: torch $("$VS_PY" -c 'import torch;print(torch.__version__)')"
 else
-  if [ "${DRIVER:-0}" -ge 525 ]; then
-    uv pip install -q --python "$VS_PY" torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-  else
-    uv pip install -q --python "$VS_PY" torch torchaudio --index-url https://download.pytorch.org/whl/cu118
-  fi
-  # Cài theo pyproject; bỏ qua phần frontend (bun) vì ta chỉ dùng REST API
-  uv pip install -q --python "$VS_PY" -e . || die "Cài VoiceStudio thất bại — xem log phía trên"
+  # KHÔNG cài torch bằng tay. pyproject.toml của VoiceStudio khai báo index
+  # riêng [tool.uv.sources] pytorch-cuda = .../whl/cu128 và ghim torch==2.8.0.
+  # Cài trước từ index khác (cu121/cu118) là uv không giải được phụ thuộc:
+  #   "Because there is no version of torch==2.8.0 ... unsatisfiable"
+  # uv sync theo uv.lock của chính họ là cách tái lập môi trường chuẩn nhất.
+  uv python install 3.12
+  uv sync --python 3.12 || die "uv sync thất bại — xem log phía trên"
   uv pip install -q --python "$VS_PY" requests
 fi
 "$VS_PY" -c "import torch; print('  VoiceStudio ok · torch', torch.__version__, '· cuda', torch.cuda.is_available())"
+
+# WhisperX / faster-whisper chạy trên CTranslate2 và BẮT BUỘC cần cuDNN 8,
+# trong khi torch cu128 chỉ mang theo cuDNN 9. Thiếu nó backend lặng lẽ lùi về
+# pytorch-whisper — mất căn chỉnh thời gian và tách người nói, kết quả dub kém
+# hơn hẳn. Cách cài lấy đúng từ thông báo lỗi của chính VoiceStudio.
+CUDNN8_DIR="$VS_DIR/.venv/lib/python3.12/site-packages/cudnn8_compat"
+if [ -d "$CUDNN8_DIR" ] && [ -n "$(ls -A "$CUDNN8_DIR" 2>/dev/null)" ]; then
+  ok "cuDNN 8 compat đã có (WhisperX dùng được)"
+else
+  log "Cài cuDNN 8 compat cho WhisperX"
+  uv pip install -q --target "$CUDNN8_DIR" "nvidia-cudnn-cu12==8.9.7.29" \
+    || warn "cuDNN 8 compat cài lỗi — ASR sẽ lùi về pytorch-whisper"
+fi
 
 mkdir -p "$VS_DATA"
 
