@@ -67,7 +67,11 @@ DUB_CONCURRENCY=1 /root/worker-venv/bin/python \
   /root/duoyin-videos/worker/worker.py --stage all --once
 ```
 
-Chạy ~10 phút. Trong lúc đó mở tab Termius thứ hai gõ:
+**Phải chạy lệnh này HAI lần.** `--once` = đúng một lứa, mà một lứa chỉ đưa
+job qua *một* chặng: lần đầu `NEW→DUBBED` (~5 phút), lần hai `DUBBED→DONE`
+(~4 phút). Chạy một lần rồi thấy dừng ở `DUBBED` là đúng, chưa phải lỗi.
+
+Trong lúc đó mở tab Termius thứ hai gõ:
 
 ```bash
 watch -n5 nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv
