@@ -17,3 +17,6 @@ venv/
 # hệ điều hành
 .DS_Store
 .venv-dev/
+
+# gói backup khoá — KHÔNG BAO GIỜ commit (đã lỡ 1 lần, commit 12dc68b)
+*.tar.gz.enc
