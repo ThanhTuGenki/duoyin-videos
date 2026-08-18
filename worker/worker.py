@@ -56,6 +56,16 @@ POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
 # Số video dub đồng thời. TTS vẫn xếp hàng trên GPU, nhưng tải/dịch/mux/upload
 # (~75s trong 155s mỗi job, đo trên 3090) chồng lên nhau được → ~1.6-2x throughput.
 DUB_CONCURRENCY = int(os.environ.get("DUB_CONCURRENCY", "3"))
+# Số video VSR đồng thời. Trước 18.08 bị ép cứng bằng 1 với lý do "VSR ăn GPU
+# liên tục nên song song chỉ tranh nhau" — đó là SUY ĐOÁN, và đo thật cho thấy
+# sai: VSR luân phiên hai pha, dò sub bằng PaddleOCR (CPU, GPU rảnh) rồi vá
+# frame bằng STTN (GPU, CPU rảnh). Đo trên 3090 lúc đang chạy: GPU 0%, load
+# 26/32 core, VRAM 6.9/24GB — tức lúc nào cũng bỏ không một nửa máy.
+# Chạy nhiều luồng để pha CPU của job này chồng lên pha GPU của job kia.
+VSR_CONCURRENCY = int(os.environ.get("VSR_CONCURRENCY", "3"))
+# Giãn cách (giây) giữa 2 dòng tiến độ VSR trong log. VSR in nhiều lần mỗi
+# giây; in hết sẽ ngập log, lại còn nhiều job song song trộn vào nhau.
+VSR_PROGRESS_EVERY_S = float(os.environ.get("VSR_PROGRESS_EVERY_S", "30"))
 # Cách xử lý câu dịch dài hơn khung thời gian gốc.
 #   concise (mặc định của VoiceStudio) — overflow thì CẮT CỨNG ở biên slot,
 #     đúng triệu chứng "dừng ngang ở từ cuối cùng" user báo 17.08. Đo được
@@ -343,7 +353,60 @@ def vs_fetch_srt(vs_job: str) -> str:
 
 # ── Nhánh hình (VSR) ─────────────────────────────────────────────
 
-def vsr_remove_subs(video_in: Path, video_out: Path) -> None:
+# 'Subtitle Removing:  26%|██▌       | 800/3051 [00:45<02:07, 37.99frame/s]'
+_TQDM_RE = re.compile(r"(\d+)%\|[^|]*\|\s*(\d+)/(\d+)")
+
+
+def run_progress(cmd: list[str], *, cwd: str | None = None,
+                 timeout: int = 7200, label: str = "") -> str:
+    """Như run() nhưng VỪA thu output VỪA in tiến độ ra log theo nhịp.
+
+    VSR in tiến độ bằng ký tự \r chứ không xuống dòng, nên đọc theo dòng sẽ
+    treo — phải đọc từng khối rồi tách cả \r lẫn \n.
+
+    Hạn chế đã biết: hạn giờ chỉ được kiểm giữa hai khối output. VSR in liên
+    tục nên thực tế không sao, nhưng nếu nó treo hẳn mà không in gì thì hạn
+    giờ sẽ không kích hoạt.
+    """
+    proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True,
+                            errors="replace")
+    chunks: list[str] = []
+    buf = ""
+    last_log = 0.0
+    deadline = time.time() + timeout
+    try:
+        while True:
+            block = proc.stdout.read(256)
+            if not block:
+                break
+            chunks.append(block)
+            buf += block
+            parts = re.split(r"[\r\n]", buf)
+            buf = parts.pop()          # đuôi chưa trọn vẹn, để dành khối sau
+            now = time.time()
+            if now > deadline:
+                proc.kill()
+                raise JobError(f"{cmd[0]} chạy quá {timeout}s — đã dừng")
+            if now - last_log < VSR_PROGRESS_EVERY_S:
+                continue
+            for line in reversed(parts):   # lấy mốc mới nhất, bỏ qua các mốc cũ
+                m = _TQDM_RE.search(line)
+                if m:
+                    pct, done, total = m.groups()
+                    log(f"  {label}xoá sub {pct}% · {done}/{total} frame")
+                    last_log = now
+                    break
+    finally:
+        proc.stdout.close()
+        rc = proc.wait()
+    out = "".join(chunks)
+    if rc != 0:
+        raise JobError(f"Lệnh thất bại ({cmd[0]} rc={rc}): {out.strip()[-400:]}")
+    return out
+
+
+def vsr_remove_subs(video_in: Path, video_out: Path, label: str = "") -> None:
     """Xóa hardsub. Ném JobError nếu VSR không dò được vùng sub nào.
 
     Ca thật 17.08 22:5x: VSR thoát mã 0, tạo file 100MB hợp lệ, worker báo DONE
@@ -351,8 +414,8 @@ def vsr_remove_subs(video_in: Path, video_out: Path) -> None:
     không hề inpaint: PaddleOCR (bản CPU) không dò ra vùng sub nên VSR chỉ
     encode lại. "Thoát mã 0" KHÔNG đủ để kết luận đã xóa sub.
     """
-    out = run(vsr_command(VSR_PY, str(video_in), str(video_out), sub_area=VSR_SUB_AREA),
-              cwd=VSR_DIR, timeout=4 * 3600)
+    out = run_progress(vsr_command(VSR_PY, str(video_in), str(video_out), sub_area=VSR_SUB_AREA),
+                       cwd=VSR_DIR, timeout=4 * 3600, label=label)
     if not video_out.exists() or video_out.stat().st_size < 100_000:
         raise JobError("VSR không tạo ra file kết quả hợp lệ")
 
@@ -438,7 +501,7 @@ def process_vsr(ws, job: Job) -> None:
         dubbed = rclone_download_dubbed(job.id, job_dir)
 
         final = job_dir / f"{job.id}_vi.mp4"
-        vsr_remove_subs(dubbed, final)
+        vsr_remove_subs(dubbed, final, label=f"[{job.id}] ")
 
         link = rclone_upload(final, job.id)
         elapsed = int(time.time() - t0)
@@ -528,10 +591,13 @@ def main() -> None:
 
         if jobs:
             idle_reported = False
-            # Song song chỉ ở stage dub: TTS xếp hàng trên GPU nhưng tải/dịch/
-            # mux/upload chồng nhau được. Stage vsr chạy tuần tự — VSR ăn GPU
-            # nặng và liên tục, chạy song song chỉ tranh nhau chậm hơn.
-            workers = DUB_CONCURRENCY if args.stage == "dub" else 1
+            # Cả hai stage đều chạy song song được, nhưng vì lý do khác nhau:
+            #   dub — TTS xếp hàng trên GPU, còn tải/dịch/upload chồng nhau được
+            #   vsr — dò sub chạy CPU, vá frame chạy GPU, hai pha chồng nhau được
+            # Số đo 18.08: chạy tuần tự mất 268s/video (21 job trong 1h34m),
+            # trong khi từng job chỉ tốn ~275s CPU-time → gần như không có phần
+            # nào chồng lên nhau, phí nửa máy.
+            workers = DUB_CONCURRENCY if args.stage in ("dub", "all") else VSR_CONCURRENCY
             # Chỉ làm MỘT lứa rồi đọc lại Sheet. Trước đây worker chụp cả hàng
             # đợi vào bộ nhớ và chạy hết mới đọc lại → sửa translation_mode
             # giữa batch không có tác dụng (dính 17.08: đổi 3 dòng sang autofit

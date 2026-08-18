@@ -326,6 +326,14 @@ VSR_SUB_AREA="860,1010,100,1820"
 # Số video dub song song. 3 luồng nhanh ~1.8x so với tuần tự (đo trên 3090).
 DUB_CONCURRENCY=3
 
+# Số video VSR song song. VSR luân phiên pha CPU (dò sub) và pha GPU (vá
+# frame) nên chạy nhiều luồng để hai pha chồng lên nhau. Chạy 1 luồng đo
+# được 268s/video trong khi máy bỏ không nửa tài nguyên (GPU 0%, load 26/32).
+VSR_CONCURRENCY=3
+
+# Bao lâu in một dòng tiến độ VSR (giây). VSR in nhiều lần mỗi giây.
+VSR_PROGRESS_EVERY_S=30
+
 # Cách xử lý câu dịch dài hơn khung gốc — xem README, đừng đổi nếu chưa đọc.
 TIMING_STRATEGY=smart_fit
 
