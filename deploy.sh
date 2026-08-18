@@ -21,22 +21,34 @@ PASS="${3:?Thiếu password}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# expect helper: chạy lệnh ssh/scp với password
-_expect() {
-  expect -c "
-    set timeout ${EXP_TIMEOUT:-900}
-    spawn $1
-    expect {
-        -re \"(P|p)assword:\" { send \"$PASS\r\"; exp_continue }
-        eof
-    }
-    catch wait result
-    exit [lindex \$result 3]
-  "
+# expect helper: chạy lệnh ssh/scp với password.
+#
+# Lệnh đi qua argv của MỘT FILE script expect, không nối vào thân script Tcl.
+# Hai lỗi đã dính 18.08 khi làm kiểu khác:
+#   1. Nối chuỗi vào `expect -c "... spawn $1 ..."` → Tcl nuốt cú pháp của
+#      lệnh: "; echo CODE_OK" thành invalid command name "echo", còn
+#      "printf '[gdrive]...'" thành invalid command name "gdrive". Tar không
+#      giải nén, rclone.conf không được ghi, mà deploy vẫn chạy tiếp.
+#   2. `expect -c 'script' -- args` KHÔNG nạp argv — expect coi tham số kế
+#      tiếp là tên file script ("couldn't read file 900").
+cat > "$TMP/run.exp" <<'EXPEOF'
+set timeout [lindex $argv 0]
+set pass    [lindex $argv 1]
+set cmd     [lrange $argv 2 end]
+spawn -noecho {*}$cmd
+expect {
+    -re "(P|p)assword:" { send "$pass\r"; exp_continue }
+    eof
 }
+catch wait result
+exit [lindex $result 3]
+EXPEOF
+
+_expect() { expect "$TMP/run.exp" "${EXP_TIMEOUT:-900}" "$PASS" "$@"; }
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-rsh() { _expect "ssh -p $PORT $SSH_OPTS root@$IP $*"; }
-rcp() { _expect "scp -r -P $PORT $SSH_OPTS $1 root@$IP:$2"; }
+# shellcheck disable=SC2086  # SSH_OPTS cố tình tách từ thành nhiều tham số
+rsh() { _expect ssh -p "$PORT" $SSH_OPTS "root@$IP" "$*"; }
+rcp() { _expect scp -r -P "$PORT" $SSH_OPTS "$1" "root@$IP:$2"; }
 
 echo "━━ 1/4 Đóng gói code + secrets"
 tar czf "$TMP/worker.tgz" --exclude='.venv-dev' --exclude='__pycache__' --exclude='.pytest_cache' worker
