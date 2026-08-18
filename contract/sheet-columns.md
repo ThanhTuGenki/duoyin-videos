@@ -55,44 +55,50 @@ Thành phẩm ra `output/<id>/` — xem bảng ở mục "Vòng đời status" b
 | L | `process_time` | Worker | Tổng thời gian xử lý (giây) — để tính chi phí ⚡ |
 | M | `updated_at` | Worker | ISO 8601 |
 
-## Vòng đời status — 2 giai đoạn độc lập
-
-Dub và xóa sub chạy **container riêng** (quyết định 17.08: dựng VSR hay vấp môi
-trường, tách ra để nhánh dub không bị chặn).
+## Vòng đời status
 
 ```
-GIAI ĐOẠN A — dub (worker --stage dub)
-  NEW ──► DUBBING ──► DUBBED
+QUY TRÌNH ĐANG DÙNG — dub (worker --stage dub)
+  NEW ──► DUBBING ──► DUBBED   ← thành phẩm
                         └─ Drive output/<id>/: <id>_dubbed.mp4 + <id>_vi.srt
-
-GIAI ĐOẠN B — xóa sub (worker --stage vsr)
-  DUBBED ──► CLEANING ──► DONE
-                            └─ Drive output/<id>/: <id>_vi.mp4  ← thành phẩm
 
   lỗi ở bất kỳ đâu → ERROR (+ message ở cột error)
 ```
+
+`DUBBED` là trạng thái cuối. Việc che sub làm ngoài (CapCut hoặc ffmpeg
+`delogo` trên máy mình) — miễn phí, không cần GPU.
+
+```
+KHÔNG DÙNG NỮA — xoá sub (worker --stage vsr)
+  DUBBED ──► CLEANING ──► DONE
+                            └─ Drive output/<id>/: <id>_vi.mp4
+```
+
+Bỏ ngày 18.08 vì chi phí: ~262s cho video 122s (~2× thời lượng), ~475⚡/video,
+gấp ~3 lần chặng dub. Code vẫn chạy đúng và vẫn giữ lại; đo cụ thể ở RUNBOOK.
 
 | Status | Nghĩa | Ai xử lý |
 |---|---|---|
 | `NEW` | chờ dub | worker stage dub |
 | `DUBBING` | đang dịch + lồng tiếng | — |
-| `DUBBED` | có video tiếng Việt, **duyệt được rồi** | worker stage vsr |
-| `CLEANING` | đang xóa sub | — |
-| `DONE` | thành phẩm hoàn chỉnh | — |
+| `DUBBED` | **thành phẩm** — video tiếng Việt + .srt | — (che sub làm ngoài) |
+| `CLEANING` | đang xóa sub (stage vsr, không dùng nữa) | — |
+| `DONE` | đã xoá sub (stage vsr, không dùng nữa) | — |
 | `ERROR` | lỗi, xem cột error | bạn quyết |
 
-**`<id>_dubbed.mp4` kiêm hai việc:** vừa là bản duyệt (video gốc còn sub Trung
-nhưng đã nói tiếng Việt — nghe/duyệt giọng và bản dịch **trước** khi tốn tiền
-VSR, phần đắt nhất ~2.4× thời lượng), vừa là **đầu vào của stage vsr**. Không có
+**`<id>_dubbed.mp4`** là video gốc (còn sub Trung) đã nói tiếng Việt. Không có
 bước ghép audio riêng: VoiceStudio xuất video đã trộn sẵn (h264+aac, 1 track
 tiếng Việt, `preserve_bg=true` giữ nhạc nền).
+
+Vùng sub cần che, đo trên video 1920×1080: `y 860→1010, x 100→1820`. Xem
+RUNBOOK để biết lệnh `ffmpeg delogo` và cách đo lại khi đổi độ phân giải.
 
 **`<id>_vi.srt` lưu rời, KHÔNG burn vào video** (quyết định 17.08). Muốn có sub
 tiếng Việt thì gắn ở CapCut hoặc script phụ — giữ video sạch để linh hoạt.
 
 Quy tắc chạy lại:
 - Worker chỉ nhận dòng đúng status đầu vào của stage, đủ `id` + `drive_folder_link`.
-- Lỗi "sạch" → sửa tay status về `NEW` (dub lại) hoặc `DUBBED` (chỉ VSR lại).
+- Lỗi "sạch" → sửa tay status về `NEW` để dub lại.
 - Crash/mất mạng: worker khởi động lại **tự đòi**: kẹt `DUBBING`→`NEW`,
   kẹt `CLEANING`→`DUBBED` (không dub lại). Quá 2 lần tự chạy lại → dừng ở `ERROR`.
 

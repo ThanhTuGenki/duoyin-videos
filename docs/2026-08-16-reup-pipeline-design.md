@@ -1,8 +1,27 @@
 # Thiết kế Pipeline Reup Video Tự Động
 
 **Ngày:** 2026-08-16
-**Trạng thái:** Đã duyệt kiến trúc — chờ spike xác minh trước khi code
+**Trạng thái:** Đã triển khai, nhưng **phạm vi đã thu hẹp** — xem ghi chú dưới.
 **Mục tiêu:** Tự động hóa flow reup video: xóa hardsub + lồng tiếng Việt, tối ưu chi phí GPU thuê theo giờ.
+
+---
+
+> **Cập nhật 18.08.2026 — đã bỏ phần xoá hardsub (VSR).**
+>
+> Tài liệu này giữ nguyên như lúc thiết kế để làm hồ sơ. Thực tế sau khi chạy
+> production: dây chuyền **kết thúc ở lồng tiếng**, thành phẩm là
+> `<id>_dubbed.mp4` + `<id>_vi.srt`, và việc che sub làm ngoài bằng CapCut
+> hoặc `ffmpeg delogo` trên máy cá nhân.
+>
+> Lý do là **chi phí, không phải lỗi**: VSR xoá sub sạch (đã kiểm bằng trích
+> frame) nhưng tốn ~262s cho video 122s — khoảng 2× thời lượng, tức
+> ~475⚡/video, gấp ~3 lần chặng lồng tiếng. Hai hướng tối ưu đã thử đều không
+> ăn: máy không nghẽn CPU (32 core, load 26), và cho chạy 3 luồng song song
+> chỉ đổi 268s → 262s mỗi video vì từng job chậm đi tương ứng.
+>
+> Vì thế mọi chỗ nói "video sạch sub" trong tài liệu này nên đọc là "video đã
+> lồng tiếng, sub che ở bước hậu kỳ ngoài dây chuyền". Quy trình vận hành thật
+> nằm ở `RUNBOOK.md`.
 
 ---
 

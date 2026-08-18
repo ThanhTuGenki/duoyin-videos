@@ -1,6 +1,6 @@
 # worker — xử lý video trên container GPU
 
-## Phase 3 (đang làm): spike VoiceStudio
+## Phase 3 — spike VoiceStudio (đã xong 17.08)
 
 Mục tiêu: trả lời 2 câu hỏi rủi ro nhất **trước khi** xây worker hoàn chỉnh.
 
@@ -178,27 +178,28 @@ Mã hoá chứ không để trần vì `rclone-user-token.json` cho quyền **gh
 Drive** — ai đọc được file đó là ghi được Drive. Mất mật khẩu là mất luôn gói,
 không có đường khôi phục.
 
-## Phase 4 — worker 2 giai đoạn (dub đã chạy thật 17.08)
+## Phase 4 — worker (đã chạy thật 17-18.08)
 
-Dub và xóa sub **tách container riêng**. Lý do: dựng VSR hay vấp môi trường
-(Python 3.12, OpenGL, paddle từ mirror TQ), tách ra thì nhánh dub chạy được
-ngay; thêm nữa bản dub cho phép **duyệt trước khi tốn tiền VSR**.
+Dây chuyền **kết thúc ở lồng tiếng**. Stage `vsr` (xoá sub) còn trong code và
+vẫn chạy đúng, nhưng đã bỏ khỏi quy trình 18.08 vì chi phí — xem mục
+"Vì sao bỏ VSR" bên dưới. Vận hành hằng ngày xem `RUNBOOK.md`.
 
 ```bash
-bash /root/start_worker.sh dub     # NEW → DUBBING → DUBBED  (máy này)
-bash /root/start_worker.sh vsr     # DUBBED → CLEANING → DONE (container khác)
-bash /root/start_worker.sh all     # cả hai trên cùng máy
+bash /root/start_worker.sh dub     # NEW → DUBBING → DUBBED  ← đang dùng
+bash /root/start_worker.sh vsr     # DUBBED → CLEANING → DONE (không dùng nữa)
 # chạy 1 lượt để thử:
 /root/worker-venv/bin/python /root/duoyin-videos/worker/worker.py --stage dub --once
 ```
 
-Đầu ra mỗi giai đoạn (Drive `output/<id>/`):
+Đầu ra (Drive `output/<id>/`):
 
-| Giai đoạn | File | Dùng để |
-|---|---|---|
-| dub | `<id>_dubbed.mp4` | video đã lồng tiếng Việt — **duyệt** + **đầu vào stage vsr** |
-| dub | `<id>_vi.srt` | phụ đề Việt rời (gắn ở CapCut nếu cần) |
-| vsr | `<id>_vi.mp4` | thành phẩm: sạch sub + tiếng Việt |
+| File | Nội dung |
+|---|---|
+| `<id>_dubbed.mp4` | **thành phẩm** — video đã lồng tiếng Việt, còn sub Trung |
+| `<id>_vi.srt` | phụ đề Việt rời (gắn ở CapCut nếu cần) |
+
+Che sub làm ngoài, miễn phí: `ffmpeg -vf "delogo=x=100:y=860:w=1720:h=150"`
+cho video 1920×1080. Toạ độ và cách đo lại ở `RUNBOOK.md`.
 
 **Không tự ghép audio nữa** (đổi 17.08). Worker lấy thẳng video VoiceStudio đã
 trộn: `GET /dub/download/{job}?include_tracks=vi&default_track=vi&preserve_bg=true`
@@ -217,33 +218,46 @@ Số đo thật (RTX 3090, video ~110-120s):
 
 `health_check` chỉ kiểm thứ stage đó cần — VSR chưa dựng xong không chặn stage dub.
 
-### VSR: BẮT BUỘC đặt `VSR_SUB_AREA` khi paddle chạy CPU (đo 17.08)
+### Vì sao bỏ VSR khỏi quy trình (đo 18.08)
+
+Không phải vì lỗi — VSR xoá sub sạch, đã kiểm bằng cách trích frame. Bỏ vì
+**chi phí**: ~262s cho video 122s (≈2× thời lượng), tức **~475⚡/video**, gấp
+~3 lần chặng dub. Che sub bằng CapCut/`ffmpeg delogo` ngoài máy thì miễn phí.
+
+Đã thử hai hướng tối ưu, **cả hai đều không ăn** — ghi lại để đừng thử lại:
+
+1. Nghi thiếu CPU → sai. Máy 32 core, load 26, không nghẽn.
+2. Cho chạy 3 luồng song song (trước đó `workers` bị ép cứng 1 cho stage vsr):
+   **262s/video so với 268s tuần tự**. Từng job chậm hẳn đi (328-455s so với
+   220-275s khi chạy một mình) nên tổng lại như cũ. Giả thuyết "pha CPU dò sub
+   của job này chồng lên pha GPU vá frame của job kia" — sai.
+
+Nay `VSR_CONCURRENCY` vẫn để mặc định 3; ai chạy lại thì tự đo trước.
+
+#### Nếu chạy lại: BẮT BUỘC đặt `VSR_SUB_AREA`
 
 ```bash
-VSR_SUB_AREA="860,1010,100,1820" bash /root/start_worker.sh vsr   # 1080p dọc
+VSR_SUB_AREA="860,1010,100,1820" bash /root/start_worker.sh vsr   # 1080p
 ```
 
 Không đặt thì VSR tự dò vùng sub bằng PaddleOCR — và **bản CPU dò không ra
 gì**, nên nó chỉ encode lại, phụ đề còn nguyên. Nguy hiểm là VSR vẫn **thoát
-mã 0** và tạo file hợp lệ, worker báo `DONE` giả. Đã dính đúng ca này:
+mã 0** và tạo file hợp lệ, worker báo `DONE` giả:
 
 | | Không `-c` | Có `-c 860 1010 100 1820` |
 |---|---|---|
 | GPU trong lúc chạy | **2%** (không hề inpaint) | **95-100%** |
-| Thời gian (video 122s) | 197s | 248s |
 | Frame giây 40 | còn nguyên `外边再扩建成这么大` | **chữ mất sạch** |
 
-GPU 2% là dấu hiệu nhận biết nhanh nhất: STTN chạy thì GPU phải tải nặng.
-Nay `vsr_remove_subs` ném lỗi nếu output VSR không nhắc tới vùng sub nào dò
-được, không im lặng báo DONE nữa.
+GPU 2% là dấu hiệu nhận biết nhanh nhất. `vsr_remove_subs` nay ném lỗi nếu
+output VSR không nhắc tới vùng sub nào dò được, không im lặng báo DONE nữa.
 
 Toạ độ là **pixel**, thứ tự `ymin,ymax,xmin,xmax`, và `-c` của VSR khai báo
-`nargs=4` nên `vsr_command` tách thành 4 tham số rời. Video Douyin dọc
-1920×1080 thì sub nằm ở dải `y≈860-1010`; đổi độ phân giải là phải đo lại
-(trích 1 frame, xem sub ở đâu).
+`nargs=4` nên `vsr_command` tách thành 4 tham số rời. Đổi độ phân giải là phải
+đo lại (trích 1 frame, xem sub ở đâu).
 
-Muốn dò tự động thì cần **paddle GPU** — chỉ có trên mirror Trung Quốc, tải
-từ datacenter này rất hay treo (xem `PADDLE_MODE` trong setup.sh).
+Muốn dò tự động thì cần **paddle GPU** — chỉ có trên mirror Trung Quốc, tải từ
+datacenter hay treo (xem `PADDLE_MODE` trong setup.sh).
 
 ### Vì sao `smart_fit` chứ không phải `concise`/`stretch_video` (đo 17.08)
 

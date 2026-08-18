@@ -2,20 +2,21 @@
 
 Dành cho lúc vận hành thật. Chi tiết kỹ thuật xem `worker/README.md`.
 
+Dây chuyền **kết thúc ở lồng tiếng**. Xoá sub (VSR) đã bị bỏ khỏi quy trình —
+lý do và số đo ở mục cuối. Việc che sub làm ngoài, không tốn tiền GPU.
+
 ## Trước khi thuê: hiểu chi phí
 
-Số đo thật trên RTX 3090 (6.800⚡/h), video ~120s:
+Số đo thật trên RTX 3090 (6.800⚡/h):
 
-| Chặng | Thời gian/video | Song song được? |
+| Chặng | Thời gian/video | Song song |
 |---|---|---|
-| dub (dịch + lồng tiếng) | ~86s với 3 luồng | có, nhanh ~1.8× |
-| vsr (xoá sub) | ~240s | **không** — STTN chiếm trọn GPU |
+| dub (dịch + lồng tiếng) | ~90-170s với 3 luồng | có, nhanh ~1.8× |
 
-→ 104 video chạy `all` một mạch: **~9-10 giờ ≈ 65.000⚡**.
+→ 100 video ≈ **2.5-5 giờ ≈ 17.000-34.000⚡**.
 
-**Cách tiết kiệm:** chạy `dub` trước cho cả 104 video (~2.5 giờ ≈ 17.000⚡),
-nghe duyệt trên Drive, rồi chỉ chạy `vsr` cho những video thật sự định đăng.
-VSR là phần đắt gấp 3 lần — xoá sub cho video mà bản dịch dở là ném tiền.
+Chênh lệch lớn vì video dài ngắn khác nhau. Muốn biết chính xác thì chạy ~20
+phút rồi đo (xem mục Theo dõi).
 
 ## Bước 1 — trên Terminal của Mac (1 lệnh)
 
@@ -27,106 +28,139 @@ cd ~/Desktop/Project/duoyin-videos
 ```
 
 Nó tự: đóng gói code + secrets → đẩy lên → dựng môi trường → bật CLIProxyAPI
-+ VoiceStudio → **bật worker luôn**. Lần đầu ~5-10 phút (tải model).
++ VoiceStudio → **dừng lại, không tự chạy worker**. Lần đầu ~5-10 phút.
 
-Cuối cùng nó bám vào log. **Ctrl+C là an toàn** — chỉ rời màn hình log, worker
-vẫn chạy trên container.
+Muốn bỏ luôn 7 phút chờ mirror paddle (chỉ cần cho VSR, mà ta không dùng nữa):
 
-## Bước 2 — trên Termius: kiểm trước khi để nó chạy dài
+```bash
+PADDLE_MODE=cpu ./deploy.sh <IP> <PORT> '<PASSWORD>'
+```
 
-Kết nối `root@<IP>` cổng `<PORT>`, rồi:
+## Bước 2 — trên Termius: kiểm môi trường
+
+Kết nối `root@<IP>` đúng **cổng SSH** (panel ezycloudx ghi ở dòng `SSH Cmd`,
+KHÔNG phải cổng Jupyter — dễ nhầm), rồi:
 
 ```bash
 cat /root/worker.env          # cấu hình đang dùng
-nvidia-smi                    # GPU có nhận không
-tail -f /tmp/worker.log       # log worker (Ctrl+C để thoát)
+rclone listremotes            # phải có CẢ gdrive: lẫn gdrive-user:
+curl -s localhost:3900/health # VoiceStudio đã lên chưa
 ```
 
-`worker.env` quan trọng nhất là dòng này:
-
-```
-VSR_SUB_AREA="860,1010,100,1820"
-```
-
-Toạ độ `ymin,ymax,xmin,xmax` tính bằng **pixel**, đo cho video dọc 1920×1080.
-Sai vùng thì VSR xoá nhầm chỗ hoặc không xoá gì. Cách đo cho bộ video khác:
-
-```bash
-ffmpeg -ss 10 -i <video.mp4> -frames:v 1 /tmp/f.jpg
-# tải /tmp/f.jpg về xem chữ nằm ở dải y nào
-```
+Thiếu `gdrive-user:` là lát nữa upload sẽ lỗi — sửa trước khi chạy.
 
 ## Bước 3 — thử 1 video trước khi chạy cả lô
 
-Đây là bước đáng giá nhất. Dừng worker rồi chạy đúng 1 lứa:
+Đáng bỏ 5 phút, vì nó chặn được kiểu lỗi chỉ lộ ra khi chạy thật.
 
 ```bash
-pkill -f 'worker-venv/bin/python.*worker.py'
 set -a; . /root/worker.env; set +a
 DUB_CONCURRENCY=1 /root/worker-venv/bin/python \
-  /root/duoyin-videos/worker/worker.py --stage all --once
+  /root/duoyin-videos/worker/worker.py --stage dub --once
 ```
 
-**Phải chạy lệnh này HAI lần.** `--once` = đúng một lứa, mà một lứa chỉ đưa
-job qua *một* chặng: lần đầu `NEW→DUBBED` (~5 phút), lần hai `DUBBED→DONE`
-(~4 phút). Chạy một lần rồi thấy dừng ở `DUBBED` là đúng, chưa phải lỗi.
+Xong thì mở `output_link` in ra trong log, nghe thử: giọng phải là tiếng Việt,
+câu cuối không bị cắt cụt.
 
-Trong lúc đó mở tab Termius thứ hai gõ:
-
-```bash
-watch -n5 nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv
-```
-
-**Dấu hiệu VSR chạy thật: GPU phải lên 90-100%.** Nếu VSR chạy mà GPU chỉ 2%
-thì nó KHÔNG xoá gì cả, chỉ encode lại — xem mục Sự cố bên dưới.
-
-Xong thì kiểm thành phẩm:
+## Bước 4 — chạy cả lô
 
 ```bash
-ID=<id video vừa chạy>
-rclone copy gdrive:output/$ID/${ID}_vi.mp4 /tmp/
-ffmpeg -ss 40 -i /tmp/${ID}_vi.mp4 -frames:v 1 /tmp/check.jpg
-```
-
-Tải `/tmp/check.jpg` về (Termius có SFTP) — **phải không còn chữ Trung**.
-
-## Bước 4 — cho chạy cả lô
-
-```bash
-bash /root/start_worker.sh          # đọc WORKER_STAGE trong worker.env
-bash /root/start_worker.sh dub      # hoặc ép chỉ chạy chặng dub
+bash /root/start_worker.sh dub
 tail -f /tmp/worker.log
 ```
 
-Theo dõi tiến độ ở cột `status` trên Sheet:
-https://docs.google.com/spreadsheets/d/1tLx0SQUqWQ1q7qGpkdcH0ATMYGdCSPA9AUMqLRHyFRY/edit
+`Ctrl+C` chỉ thoát khỏi màn hình log, worker vẫn chạy nền.
 
-`NEW → DUBBING → DUBBED → CLEANING → DONE`. Lỗi thì dòng đỏ, message ở cột `error`.
+## Theo dõi
+
+```bash
+tail -f /tmp/worker.log                    # log trực tiếp
+grep -c 'DUBBED (' /tmp/worker.log         # đã xong bao nhiêu
+grep '→ ERROR' /tmp/worker.log | tail -5   # có lỗi gì
+```
+
+Xem phần trăm, tự cập nhật (không dùng `watch` — container thiếu locale UTF-8
+nên `watch` báo `unicode handling error`):
+
+```bash
+TOT=$(grep -m1 -oE '[0-9]+ job chờ' /tmp/worker.log | grep -oE '[0-9]+')
+while true; do clear
+  D=$(grep -c 'DUBBED (' /tmp/worker.log)
+  echo "$D/$TOT = $((D*100/TOT))%"
+  tail -3 /tmp/worker.log
+  sleep 30
+done
+```
+
+Hoặc thêm công thức này vào một ô trống trên Sheet để xem từ điện thoại:
+
+```
+=COUNTIF(H:H,"DUBBED") & "/" & COUNTA(A2:A)
+```
+
+Đo tốc độ thật sau ~20 phút: lấy `date` trừ dòng đầu log, chia cho số đã xong.
 
 ## Bước 5 — dừng và trả máy
 
 ```bash
 pkill -f 'worker-venv/bin/python.*worker.py'
-tail -20 /tmp/worker.log            # xem job cuối xong chưa
+tail -20 /tmp/worker.log
 ```
 
-Job đang dở sẽ kẹt ở `DUBBING`/`CLEANING`. Không sao — lần chạy sau worker
-**tự đòi lại**: `DUBBING→NEW`, `CLEANING→DUBBED` (không dub lại từ đầu).
+Job đang dở kẹt ở `DUBBING` — không sao, lần chạy sau worker **tự đòi lại**
+(`DUBBING→NEW`). Trả máy không mất gì: code trên GitHub, thành phẩm trên
+Drive, trạng thái trên Sheet, secrets có bản sao mã hoá trên Drive.
 
-Trả máy xong không mất gì: code trên GitHub, thành phẩm trên Drive, trạng
-thái trên Sheet, secrets có bản sao mã hoá trên Drive.
+## Thành phẩm và bước cuối làm ngoài
 
-## Sự cố thường gặp
+Mỗi video xong nằm ở Drive `output/<id>/`:
 
-| Hiện tượng | Nguyên nhân | Xử lý |
-|---|---|---|
-| `start_worker.sh` báo `VSR_SUB_AREA rỗng` | chưa cấu hình vùng sub | sửa `/root/worker.env` |
-| VSR chạy mà **GPU chỉ 2%**, sub còn nguyên | PaddleOCR không dò ra vùng sub | phải có `VSR_SUB_AREA`; xem lại toạ độ có đúng độ phân giải video không |
-| Video ra vẫn tiếng Trung | bước dịch hỏng | xem log có `quality=fast` không — token Antigravity hết hạn thì tự hạ về Google MT |
-| Cột `error`: `Không đủ lời thoại` | video nhạc nền/chỉ có chữ | đúng như thiết kế, bỏ qua video đó |
-| `storageQuotaExceeded` | ghi Drive bằng service account | remote `gdrive-user` chưa tạo — kiểm `rclone listremotes` |
-| Job kẹt `DUBBING` sau khi worker chết | bình thường | khởi động lại worker, nó tự đòi |
-| Quá 2 lần tự chạy lại | lỗi thật, không phải mạng | đọc cột `error`, sửa rồi đưa status về `NEW` bằng tay |
+| File | Nội dung |
+|---|---|
+| `<id>_dubbed.mp4` | video đã lồng tiếng Việt, **còn nguyên sub Trung** |
+| `<id>_vi.srt` | phụ đề tiếng Việt rời |
+
+Che sub bằng CapCut hoặc `ffmpeg` trên máy mình — miễn phí, không cần GPU.
+Vùng sub đo được trên video 1920×1080:
+
+```
+y: 860 → 1010    (cao 150px, ~14% chiều cao, sát đáy)
+x: 100 → 1820
+```
+
+```bash
+ffmpeg -i <id>_dubbed.mp4 -vf "delogo=x=100:y=860:w=1720:h=150" \
+  -c:a copy <id>_clean.mp4
+```
+
+`delogo` nội suy từ viền xung quanh — với nền phẳng (cỏ, tường) khá gọn.
+Đổi độ phân giải là phải đo lại toạ độ: trích 1 frame ra xem chữ nằm đâu.
+
+```bash
+ffmpeg -ss 40 -i <video> -frames:v 1 /tmp/f.jpg
+```
+
+## Vì sao bỏ VSR (đo 18.08)
+
+Code stage `vsr` vẫn còn và vẫn chạy đúng — xoá sub sạch, đã kiểm bằng cách
+trích frame. Bỏ khỏi quy trình vì **chi phí**, không vì lỗi:
+
+| | |
+|---|---|
+| Thời gian | ~262s cho video 122s, tức **~2× thời lượng** |
+| Chi phí | **~475⚡/video**, gấp ~3 lần chặng dub |
+
+Đã thử hai hướng tối ưu, cả hai **không ăn**:
+
+1. Nghi thiếu CPU → sai. Máy 32 core, load 26, không hề nghẽn.
+2. Cho chạy 3 luồng song song (trước đó bị ép cứng 1 luồng) → **262s/video so
+   với 268s tuần tự**, gần như không đổi. Từng job chậm hẳn đi (328-455s so
+   với 220-275s khi chạy một mình) nên tổng lại như cũ. Hai pha CPU (dò sub)
+   và GPU (vá frame) không chồng lên nhau được như tôi suy luận.
+
+Muốn chạy lại thì đặt `WORKER_STAGE=vsr` trong `worker.env` và **phải có**
+`VSR_SUB_AREA` — thiếu nó thì PaddleOCR bản CPU không dò ra vùng nào, VSR chỉ
+encode lại mà vẫn báo `DONE`. Dấu hiệu nhận biết: GPU nằm ở 2% suốt.
 
 ## Chạy lại từ đầu toàn bộ
 
@@ -135,4 +169,5 @@ thái trên Sheet, secrets có bản sao mã hoá trên Drive.
 .venv-dev/bin/python worker/reset_sheet.py          # xem trước
 .venv-dev/bin/python worker/reset_sheet.py --apply  # đưa hết về NEW
 ```
+
 Nhớ xoá cả `output/` trên Drive, nếu không file cũ vẫn nằm đó.

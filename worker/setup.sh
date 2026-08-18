@@ -337,10 +337,13 @@ VSR_PROGRESS_EVERY_S=30
 # Cách xử lý câu dịch dài hơn khung gốc — xem README, đừng đổi nếu chưa đọc.
 TIMING_STRATEGY=smart_fit
 
-# Chặng chạy khi gọi start_worker.sh không kèm tham số:
-#   dub = chỉ lồng tiếng (NEW→DUBBED, duyệt trước cho rẻ)
-#   all = lồng tiếng xong xoá sub luôn (NEW→DONE)
-WORKER_STAGE=all
+# Chặng chạy khi gọi start_worker.sh không kèm tham số.
+#   dub = lồng tiếng (NEW→DUBBED) — ĐÂY LÀ QUY TRÌNH ĐANG DÙNG
+#   vsr = xoá sub (DUBBED→DONE) — đã bỏ khỏi quy trình 18.08 vì tốn ~475⚡/
+#         video, gấp ~3 lần chặng dub. Code vẫn chạy đúng, chỉ là không đáng
+#         tiền; che sub bằng CapCut/ffmpeg ngoài máy thì miễn phí. Xem RUNBOOK.
+#   all = cả hai
+WORKER_STAGE=dub
 ENVEOF
   ok "Đã tạo $ROOT/worker.env (sửa VSR_SUB_AREA ở đây nếu đổi độ phân giải)"
 else
