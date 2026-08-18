@@ -206,3 +206,74 @@ class TestTwoStage:
         rows = [HEADER, make_row(id="dy-a", status="DUBBING"), make_row(id="dy-b", status="CLEANING"),
                 make_row(id="dy-c", status="DUBBED")]
         assert [j.id for j in pick_stale_jobs(rows)] == ["dy-a", "dy-b"]
+
+
+class TestHauKy:
+    """Che sub cũ + đốt sub Việt. Ba filter đã chạy thật với ffmpeg 8.1.2 và
+    kiểm mắt thường trên frame (vùng mờ đúng y 860-1010, x 100-1820)."""
+
+    def test_delogo_dung_toa_do_pixel(self):
+        from wcontract import cover_filter
+        # area là ymin,ymax,xmin,xmax nhưng delogo nhận x,y,w,h
+        assert cover_filter("delogo", "860,1010,100,1820") == \
+            "delogo=x=100:y=860:w=1720:h=150"
+
+    def test_box_ve_khoi_dac(self):
+        from wcontract import cover_filter
+        f = cover_filter("box", "860,1010,100,1820")
+        assert "drawbox=" in f and "t=fill" in f
+
+    def test_blur_chi_lam_mo_trong_vung(self):
+        from wcontract import cover_filter
+        f = cover_filter("blur", "860,1010,100,1820")
+        # split/overlay để phần ngoài vùng giữ nguyên, không mờ cả khung
+        assert f.startswith("split[bg][fg]") and "overlay=100:860" in f
+
+    def test_mode_khong_hop_le_thi_loi(self):
+        from wcontract import cover_filter
+        import pytest
+        with pytest.raises(ValueError, match="cover mode"):
+            cover_filter("khong-ton-tai", "860,1010,100,1820")
+
+    def test_area_thieu_so_thi_loi_som(self):
+        from wcontract import cover_filter
+        import pytest
+        with pytest.raises(ValueError, match="4 số"):
+            cover_filter("delogo", "860,1010")
+
+    def test_area_nguoc_thi_loi_thay_vi_ra_filter_am(self):
+        from wcontract import cover_filter
+        import pytest
+        # ymin/ymax đảo ngược → cao âm; phải chặn chứ đừng đưa cho ffmpeg
+        with pytest.raises(ValueError, match="không hợp lệ"):
+            cover_filter("delogo", "1010,860,100,1820")
+
+    def test_mot_luot_encode_audio_copy(self):
+        from wcontract import finalize_command
+        cmd = finalize_command("in.mp4", "s.srt", "out.mp4", area="860,1010,100,1820")
+        vf = cmd[cmd.index("-vf") + 1]
+        # che rồi đốt sub trong CÙNG một chuỗi filter → chỉ mất chất 1 lần
+        assert vf == "delogo=x=100:y=860:w=1720:h=150,subtitles=s.srt"
+        assert cmd[cmd.index("-c:a") + 1] == "copy"   # tiếng Việt không nén lại
+
+    def test_khong_dot_sub_thi_chi_che(self):
+        from wcontract import finalize_command
+        cmd = finalize_command("in.mp4", "s.srt", "out.mp4",
+                               area="860,1010,100,1820", burn_subs=False)
+        assert "subtitles" not in cmd[cmd.index("-vf") + 1]
+
+    def test_khong_co_srt_thi_van_che_duoc(self):
+        from wcontract import finalize_command
+        cmd = finalize_command("in.mp4", "", "out.mp4", area="860,1010,100,1820")
+        assert "subtitles" not in cmd[cmd.index("-vf") + 1]
+
+    def test_khong_co_gi_de_lam_thi_loi(self):
+        from wcontract import finalize_command
+        import pytest
+        with pytest.raises(ValueError, match="Không có gì để làm"):
+            finalize_command("in.mp4", "", "out.mp4", area="")
+
+    def test_escape_dau_hai_cham_trong_duong_dan(self):
+        from wcontract import escape_filter_path
+        # ':' phân tách tham số trong filtergraph nên bắt buộc phải escape
+        assert escape_filter_path("/a/b:c.srt") == "/a/b\\:c.srt"

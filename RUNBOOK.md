@@ -2,8 +2,9 @@
 
 Dành cho lúc vận hành thật. Chi tiết kỹ thuật xem `worker/README.md`.
 
-Dây chuyền **kết thúc ở lồng tiếng**. Xoá sub (VSR) đã bị bỏ khỏi quy trình —
-lý do và số đo ở mục cuối. Việc che sub làm ngoài, không tốn tiền GPU.
+Dây chuyền ra **bản đăng được luôn**: lồng tiếng Việt → che sub Trung → đốt sub
+Việt, tất cả trên cùng máy thuê. Xoá sub bằng VSR đã bị bỏ (lý do ở mục cuối);
+thay bằng che sub bằng ffmpeg — rẻ hơn hàng chục lần.
 
 ## Trước khi thuê: hiểu chi phí
 
@@ -11,9 +12,11 @@ Số đo thật trên RTX 3090 (6.800⚡/h):
 
 | Chặng | Thời gian/video | Song song |
 |---|---|---|
-| dub (dịch + lồng tiếng) | ~90-170s với 3 luồng | có, nhanh ~1.8× |
+| dub (dịch + lồng tiếng, GPU) | ~90-170s với 3 luồng | có, nhanh ~1.8× |
+| hậu kỳ (che sub + đốt sub, CPU) | **chưa đo** — ước 30-60s | chạy xen, CPU đang rảnh |
 
-→ 100 video ≈ **2.5-5 giờ ≈ 17.000-34.000⚡**.
+→ 100 video ≈ **2.5-5 giờ ≈ 17.000-34.000⚡** (hậu kỳ dùng CPU rảnh nên gần như
+không thêm giờ máy, nhưng con số này **chưa kiểm chứng trên máy thật**).
 
 Chênh lệch lớn vì video dài ngắn khác nhau. Muốn biết chính xác thì chạy ~20
 phút rồi đo (xem mục Theo dõi).
@@ -111,34 +114,58 @@ Job đang dở kẹt ở `DUBBING` — không sao, lần chạy sau worker **t�
 (`DUBBING→NEW`). Trả máy không mất gì: code trên GitHub, thành phẩm trên
 Drive, trạng thái trên Sheet, secrets có bản sao mã hoá trên Drive.
 
-## Thành phẩm và bước cuối làm ngoài
+## Thành phẩm
 
 Mỗi video xong nằm ở Drive `output/<id>/`:
 
 | File | Nội dung |
 |---|---|
-| `<id>_dubbed.mp4` | video đã lồng tiếng Việt, **còn nguyên sub Trung** |
-| `<id>_vi.srt` | phụ đề tiếng Việt rời |
+| `<id>_final.mp4` | **bản đăng được** — che sub Trung + sub Việt đã đốt vào |
+| `<id>_dubbed.mp4` | bản đã lồng tiếng, còn sub Trung — giữ để làm lại hậu kỳ |
+| `<id>_vi.srt` | phụ đề Việt rời — dùng nếu muốn tự chỉnh ở CapCut |
 
-Che sub bằng CapCut hoặc `ffmpeg` trên máy mình — miễn phí, không cần GPU.
-Vùng sub đo được trên video 1920×1080:
+Cột `output_link` trên Sheet trỏ vào `_final.mp4`.
 
-```
-y: 860 → 1010    (cao 150px, ~14% chiều cao, sát đáy)
-x: 100 → 1820
-```
+Giữ lại `_dubbed.mp4` vì đó là thứ **đắt nhất** (đã tốn GPU cho TTS). Đổi kiểu
+che hay chỉnh sub thì làm lại từ nó, không phải dub lại.
+
+### Cấu hình hậu kỳ
+
+Sửa trong `/root/worker.env`:
+
+| Biến | Nghĩa |
+|---|---|
+| `COVER_MODE` | `delogo` (nội suy, gọn với nền phẳng) · `blur` (mờ, luôn dùng được) · `box` (khối đen, che chắc) |
+| `BURN_SUBS` | `1` = đốt sub Việt vào video; `0` = chỉ che sub cũ |
+| `SUB_AREA` | vùng sub cũ, mặc định lấy theo `VSR_SUB_AREA` |
+| `X264_CRF` | 18-23; thấp hơn = nét hơn, file to hơn |
+| `POST_PROCESS` | `0` để tắt hẳn hậu kỳ |
+
+**Chạy 1 video rồi xem trước khi thả cả lô** — `delogo` gọn với nền phẳng (cỏ,
+tường) nhưng nhoè khi nền nhiều chi tiết; gặp vậy thì đổi `COVER_MODE=box`.
+
+Đổi độ phân giải là **phải đo lại** `SUB_AREA`, sai vùng thì che nhầm chỗ:
 
 ```bash
-ffmpeg -i <id>_dubbed.mp4 -vf "delogo=x=100:y=860:w=1720:h=150" \
-  -c:a copy <id>_clean.mp4
+ffmpeg -ss 40 -i <video> -frames:v 1 /tmp/f.jpg   # rồi xem chữ nằm ở dải y nào
 ```
 
-`delogo` nội suy từ viền xung quanh — với nền phẳng (cỏ, tường) khá gọn.
-Đổi độ phân giải là phải đo lại toạ độ: trích 1 frame ra xem chữ nằm đâu.
+Vùng đã đo cho video 1920×1080: `y 860→1010` (cao 150px, ~14% chiều cao, sát
+đáy), `x 100→1820`.
+
+### Chưa kiểm chứng trên máy thật
+
+Phần hậu kỳ mới viết 18.08, đã kiểm ở local: ba filter che chạy thật với ffmpeg
+8.1.2 và soi frame thấy đúng vùng, 44 unit test pass. **Nhưng chưa chạy trọn
+một video trên container**, và có một điều kiện cần xác nhận ngay lần thuê sau:
 
 ```bash
-ffmpeg -ss 40 -i <video> -frames:v 1 /tmp/f.jpg
+ffmpeg -hide_banner -filters | grep subtitles
 ```
+
+Không ra dòng nào nghĩa là ffmpeg thiếu `libass` → không đốt được sub. Worker
+tự phát hiện và hạ xuống chỉ-che-sub kèm cảnh báo trong log, `.srt` vẫn lưu
+rời nên không mất gì.
 
 ## Vì sao bỏ VSR (đo 18.08)
 

@@ -33,8 +33,8 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from wcontract import (  # noqa: E402
     COL_INDEX, STATUS_CLEANING, STATUS_DONE, STATUS_DUBBED, STATUS_DUBBING,
-    STATUS_ERROR, Job, has_enough_speech, parse_translated, pick_jobs,
-    pick_stale_jobs, reclaim_decision, vsr_command,
+    STATUS_ERROR, Job, finalize_command, has_enough_speech, parse_translated,
+    pick_jobs, pick_stale_jobs, reclaim_decision, vsr_command,
 )
 
 # ── Cấu hình (env override được) ─────────────────────────────────
@@ -50,6 +50,19 @@ VSR_PY = os.environ.get("VSR_PY", f"{VSR_DIR}/venv_vsr/bin/python")
 # PaddleOCR bản CPU dò không ra (xem vsr_remove_subs), nên khi chạy CPU
 # paddle thì phải đặt tay, ví dụ VSR_SUB_AREA="880,1000,200,1720" cho 1080p.
 VSR_SUB_AREA = os.environ.get("VSR_SUB_AREA", "").strip()
+# ── Hậu kỳ ffmpeg ngay trên máy thuê (quyết định 18.08) ──
+# Làm ở đây thay vì máy cá nhân vì: file đã nằm sẵn trên đĩa sau khi dub nên
+# KHÔNG tốn lượt truyền nào (làm ở nhà thì phải tải 100MB/video xuống rồi đẩy
+# lên lại), CPU đang rảnh trong lúc GPU chạy TTS, và ffmpeg bản apt của Ubuntu
+# có libass để đốt sub — ffmpeg brew trên macOS thì không.
+POST_PROCESS = os.environ.get("POST_PROCESS", "1") not in ("0", "no", "false")
+# Vùng sub cũ cần che, dùng chung với VSR_SUB_AREA vì là cùng một vùng.
+SUB_AREA = os.environ.get("SUB_AREA", VSR_SUB_AREA).strip()
+# delogo (nội suy, gọn với nền phẳng) · blur (luôn dùng được) · box (khối đen)
+COVER_MODE = os.environ.get("COVER_MODE", "delogo").strip()
+BURN_SUBS = os.environ.get("BURN_SUBS", "1") not in ("0", "no", "false")
+X264_CRF = int(os.environ.get("X264_CRF", "20"))
+X264_PRESET = os.environ.get("X264_PRESET", "veryfast")
 WORK_DIR = Path(os.environ.get("WORK_DIR", "/root/jobs"))
 VOICE_DIR = Path(__file__).resolve().parent / "assets" / "voice"
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
@@ -428,6 +441,50 @@ def vsr_remove_subs(video_in: Path, video_out: Path, label: str = "") -> None:
             f"Đặt VSR_SUB_AREA='ymin,ymax,xmin,xmax' để chỉ định tay. Log: {tail}")
 
 
+# ── Hậu kỳ: che sub cũ + đốt sub tiếng Việt ─────────────────────
+
+_filters_cache: set[str] | None = None
+
+
+def ffmpeg_has_filter(name: str) -> bool:
+    """Có filter này trong bản ffmpeg đang cài không.
+
+    Cần kiểm thật vì `subtitles` phụ thuộc libass — bản apt của Ubuntu có,
+    bản brew trên macOS không. Thiếu mà cứ chạy thì ffmpeg lỗi giữa job.
+    """
+    global _filters_cache
+    if _filters_cache is None:
+        try:
+            out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                                 capture_output=True, text=True, timeout=60).stdout
+            _filters_cache = {ln.split()[1] for ln in out.splitlines()
+                              if len(ln.split()) > 2 and ln.startswith(" ")}
+        except (OSError, subprocess.SubprocessError):
+            _filters_cache = set()
+    return name in _filters_cache
+
+
+def finalize_video(video_in: Path, srt_path: Path | None, out_path: Path,
+                   label: str = "") -> Path:
+    """Ra bản đăng được: che sub Trung + đốt sub Việt, MỘT lượt encode."""
+    burn = BURN_SUBS and srt_path is not None and srt_path.exists()
+    if burn and not ffmpeg_has_filter("subtitles"):
+        log(f"  {label}ffmpeg thiếu filter 'subtitles' (không có libass) — "
+            f"chỉ che sub cũ, .srt vẫn lưu rời")
+        burn = False
+    cmd = finalize_command(
+        str(video_in), str(srt_path) if burn else "", str(out_path),
+        cover_mode=COVER_MODE, area=SUB_AREA, burn_subs=burn,
+        crf=X264_CRF, preset=X264_PRESET)
+    t0 = time.time()
+    run(cmd, timeout=3600)
+    if not out_path.exists() or out_path.stat().st_size < 100_000:
+        raise JobError(f"Hậu kỳ ffmpeg không ra file hợp lệ ({out_path.name})")
+    log(f"  {label}hậu kỳ {int(time.time() - t0)}s · che={COVER_MODE}"
+        f"{' · đốt sub' if burn else ''}")
+    return out_path
+
+
 # ── Giai đoạn A: dub (NEW → DUBBING → DUBBED) ────────────────────
 
 def process_dub(ws, job: Job) -> None:
@@ -454,13 +511,22 @@ def process_dub(ws, job: Job) -> None:
         dubbed = job_dir / f"{job.id}_dubbed.mp4"
         dubbed.write_bytes(vs_fetch_video(vs_job))
         srt = vs_fetch_srt(vs_job)
+        srt_path = None
         if srt:
-            (job_dir / f"{job.id}_vi.srt").write_text(srt, encoding="utf-8")
-            rclone_upload(job_dir / f"{job.id}_vi.srt", job.id)
+            srt_path = job_dir / f"{job.id}_vi.srt"
+            srt_path.write_text(srt, encoding="utf-8")
+            rclone_upload(srt_path, job.id)
         else:
             log(f"  [{job.id}] không lấy được .srt (bỏ qua, không chặn)")
 
+        # Vẫn giữ bản _dubbed.mp4: đó là bản gốc đắt nhất (đã tốn GPU cho TTS).
+        # Hậu kỳ lỗi hay muốn đổi kiểu che thì làm lại từ nó, không phải dub lại.
         link = rclone_upload(dubbed, job.id)
+        if POST_PROCESS and (SUB_AREA or (BURN_SUBS and srt_path)):
+            final = finalize_video(dubbed, srt_path,
+                                   job_dir / f"{job.id}_final.mp4",
+                                   label=f"[{job.id}] ")
+            link = rclone_upload(final, job.id)   # link trỏ vào bản đăng được
         elapsed = int(time.time() - t0)
         set_status(ws, job, STATUS_DUBBED, output_link=link, process_time=str(elapsed), error="")
         notify(f"🎙️ {job.id} dub xong ({elapsed}s): {job.title[:60]}")

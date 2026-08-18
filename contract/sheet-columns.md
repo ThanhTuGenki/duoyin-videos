@@ -60,13 +60,20 @@ Thành phẩm ra `output/<id>/` — xem bảng ở mục "Vòng đời status" b
 ```
 QUY TRÌNH ĐANG DÙNG — dub (worker --stage dub)
   NEW ──► DUBBING ──► DUBBED   ← thành phẩm
-                        └─ Drive output/<id>/: <id>_dubbed.mp4 + <id>_vi.srt
+                        └─ Drive output/<id>/:
+                             <id>_final.mp4   ← BẢN ĐĂNG ĐƯỢC (che sub cũ + sub Việt)
+                             <id>_dubbed.mp4  ← bản đã lồng tiếng, còn sub Trung
+                             <id>_vi.srt      ← phụ đề Việt rời
 
   lỗi ở bất kỳ đâu → ERROR (+ message ở cột error)
 ```
 
-`DUBBED` là trạng thái cuối. Việc che sub làm ngoài (CapCut hoặc ffmpeg
-`delogo` trên máy mình) — miễn phí, không cần GPU.
+`DUBBED` là trạng thái cuối, và `output_link` trỏ vào `<id>_final.mp4`.
+
+Hậu kỳ (che sub Trung + đốt sub Việt) chạy **ngay trên máy thuê** bằng ffmpeg,
+gộp trong một lượt encode — xem `RUNBOOK.md`. Bản `_dubbed.mp4` vẫn giữ vì đó
+là thứ đắt nhất (đã tốn GPU cho TTS): muốn đổi kiểu che thì làm lại từ nó,
+không phải dub lại.
 
 ```
 KHÔNG DÙNG NỮA — xoá sub (worker --stage vsr)

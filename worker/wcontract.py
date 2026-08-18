@@ -128,6 +128,67 @@ def vsr_command(vsr_python: str, video_in: str, video_out: str,
     return cmd
 
 
+def escape_filter_path(path: str) -> str:
+    """Escape đường dẫn để nhét vào filtergraph của ffmpeg.
+
+    Trong filtergraph, ':' phân tách tham số và '\\' là ký tự escape, nên
+    đường dẫn phải được escape trước — không thì filter bị parse sai.
+    """
+    return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
+COVER_MODES = ("delogo", "blur", "box")
+
+
+def cover_filter(mode: str, area: str) -> str:
+    """Filter che vùng phụ đề cũ. area = 'ymin,ymax,xmin,xmax' (pixel).
+
+    Ba cách, chọn theo nội dung video:
+      delogo — nội suy từ viền xung quanh; gọn nhất với nền phẳng (cỏ, tường),
+               nhưng nhoè khi nền nhiều chi tiết
+      blur   — làm mờ mạnh vùng đó; luôn dùng được, còn thấy vệt mờ
+      box    — vẽ khối đen đặc; chắc chắn che sạch, trông như thanh phụ đề
+    """
+    if mode not in COVER_MODES:
+        raise ValueError(f"cover mode phải thuộc {COVER_MODES}, nhận {mode!r}")
+    parts = [p.strip() for p in area.replace(",", " ").split() if p.strip()]
+    if len(parts) != 4:
+        raise ValueError(f"area cần 4 số 'ymin,ymax,xmin,xmax', nhận: {area!r}")
+    ymin, ymax, xmin, xmax = (int(p) for p in parts)
+    w, h = xmax - xmin, ymax - ymin
+    if w <= 0 or h <= 0:
+        raise ValueError(f"area không hợp lệ (rộng {w}, cao {h}): {area!r}")
+    if mode == "delogo":
+        return f"delogo=x={xmin}:y={ymin}:w={w}:h={h}"
+    if mode == "box":
+        return f"drawbox=x={xmin}:y={ymin}:w={w}:h={h}:color=black:t=fill"
+    # blur: chỉ làm mờ trong vùng, phần còn lại giữ nguyên
+    return (f"split[bg][fg];[fg]crop={w}:{h}:{xmin}:{ymin},boxblur=20:2[blr];"
+            f"[bg][blr]overlay={xmin}:{ymin}")
+
+
+def finalize_command(video_in: str, srt: str, out_path: str, *,
+                     cover_mode: str = "delogo", area: str = "",
+                     burn_subs: bool = True, crf: int = 20,
+                     preset: str = "veryfast") -> list[str]:
+    """Che sub cũ + (tuỳ chọn) đốt sub tiếng Việt, trong MỘT lượt encode.
+
+    Một lượt để chỉ mất chất một lần. Audio stream-copy nên tiếng Việt đi qua
+    nguyên vẹn, không nén lại.
+    """
+    chain = []
+    if area:
+        chain.append(cover_filter(cover_mode, area))
+    if burn_subs and srt:
+        chain.append(f"subtitles={escape_filter_path(srt)}")
+    if not chain:
+        raise ValueError("Không có gì để làm: thiếu cả area lẫn srt")
+    return ["ffmpeg", "-y", "-loglevel", "error", "-i", video_in,
+            "-vf", ",".join(chain),
+            "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-c:a", "copy", "-movflags", "+faststart", out_path]
+
+
 def mux_command(clean_video: str, dubbed_audio: str, out_path: str) -> list[str]:
     """Ghép hình sạch + tiếng Việt. Video stream-copy (không re-encode),
     audio WAV → AAC 192k. -shortest phòng audio dài hơn hình vài trăm ms."""

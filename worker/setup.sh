@@ -334,6 +334,24 @@ VSR_CONCURRENCY=3
 # Bao lâu in một dòng tiến độ VSR (giây). VSR in nhiều lần mỗi giây.
 VSR_PROGRESS_EVERY_S=30
 
+# ── Hậu kỳ: che sub Trung + đốt sub Việt, chạy ngay trên máy này ──
+# Làm ở đây chứ không ở máy cá nhân: file đã nằm trên đĩa sau khi dub nên không
+# tốn lượt truyền, CPU rảnh trong lúc GPU chạy TTS, và ffmpeg bản apt có libass.
+POST_PROCESS=1
+
+# Cách che sub cũ:
+#   delogo — nội suy từ viền; gọn nhất với nền phẳng (cỏ, tường), nhoè khi nền rối
+#   blur   — làm mờ vùng đó; luôn dùng được, còn thấy vệt mờ
+#   box    — khối đen đặc; che sạch chắc chắn, trông như thanh phụ đề
+COVER_MODE=delogo
+
+# Đốt sub tiếng Việt vào video. File .srt rời vẫn được lưu song song.
+BURN_SUBS=1
+
+# Chất lượng encode lại. crf thấp = nét hơn + file to hơn (18-23 là hợp lý).
+X264_CRF=20
+X264_PRESET=veryfast
+
 # Cách xử lý câu dịch dài hơn khung gốc — xem README, đừng đổi nếu chưa đọc.
 TIMING_STRATEGY=smart_fit
 
