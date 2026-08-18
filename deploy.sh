@@ -54,7 +54,29 @@ rsh "cd /root/duoyin-videos && tar xzf /root/worker.tgz 2>/dev/null; echo CODE_O
 rsh "printf '[gdrive]\ntype = drive\nscope = drive\nservice_account_file = /root/secrets/sa.json\nroot_folder_id = 14sfsTkv-k8S2rqR5kFj6EoVr_RBqXsjh\n' > /root/.config/rclone/rclone.conf; echo RCLONE_CONF_OK" | tail -1
 
 echo "━━ 3/4 Chạy bootstrap trên container (lần đầu ~20-30 phút: tải model)"
-EXP_TIMEOUT=3600 rsh "bash /root/duoyin-videos/worker/bootstrap.sh"
+# Truyền tiếp cấu hình sang container. Mặc định START_WORKER=0: dựng xong
+# nhưng CHƯA chạy — chạy cả hàng đợi là ~10 giờ tiền GPU, phải do người quyết
+# chứ không nên là tác dụng phụ của lệnh deploy.
+EXP_TIMEOUT=3600 rsh "PADDLE_MODE='${PADDLE_MODE:-auto}' START_WORKER='${START_WORKER:-0}' bash /root/duoyin-videos/worker/bootstrap.sh"
 
-echo "━━ 4/4 Theo dõi worker (Ctrl+C để rời — worker vẫn chạy tiếp trên container)"
-EXP_TIMEOUT=86400 rsh "tail -f /tmp/worker.log"
+if [ "${START_WORKER:-0}" = "0" ]; then
+  cat <<'HINT'
+
+━━ 4/4 Môi trường sẵn sàng — worker CHƯA chạy.
+
+  Thử 1 video trước (khuyên dùng, ~10 phút):
+    ssh vào máy rồi:
+      set -a; . /root/worker.env; set +a
+      DUB_CONCURRENCY=1 /root/worker-venv/bin/python \
+        /root/duoyin-videos/worker/worker.py --stage all --once
+
+  Chạy cả hàng đợi:
+      bash /root/start_worker.sh dub    # chỉ lồng tiếng, rẻ hơn ~3 lần
+      bash /root/start_worker.sh        # cả lồng tiếng + xoá sub
+
+  Chi tiết: RUNBOOK.md
+HINT
+else
+  echo "━━ 4/4 Theo dõi worker (Ctrl+C để rời — worker vẫn chạy tiếp trên container)"
+  EXP_TIMEOUT=86400 rsh "tail -f /tmp/worker.log"
+fi
