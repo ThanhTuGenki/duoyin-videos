@@ -579,7 +579,7 @@ def process_post(ws, job: Job) -> None:
         srt_path = job_dir / f"{job.id}_vi.srt"
         if not srt_path.exists():
             srt_path = None
-            log(f"  [{job.id}] không có .srt trên Drive — chỉ che sub cũ")
+            log(f"  [{job.id}] output/{job.id}/ không có .srt — chỉ che sub cũ")
 
         final = finalize_video(dubbed, srt_path, job_dir / f"{job.id}_final.mp4",
                                label=f"[{job.id}] ")
@@ -601,11 +601,17 @@ def process_post(ws, job: Job) -> None:
 # ── Giai đoạn B: vsr (DUBBED → CLEANING → DONE) ──────────────────
 
 def rclone_download_dubbed(job_id: str, dest: Path) -> Path:
-    """Kéo <id>_dubbed.mp4 mà giai đoạn dub đã đẩy lên output/<id>/."""
+    """Kéo <id>_dubbed.mp4 VÀ <id>_vi.srt từ output/<id>/ về.
+
+    Phải lấy cả .srt: chặng post cần nó để đốt sub. Bản đầu chỉ --include file
+    mp4 (viết cho chặng VSR, khi đó chưa cần .srt) nên post báo "không có .srt
+    trên Drive" cho MỌI video — trên Drive có, chỉ là bị lọc không tải về.
+    Dính 18.08, 3 video ra bản chỉ-che-sub không có phụ đề Việt.
+    """
     name = f"{job_id}_dubbed.mp4"
     dest.mkdir(parents=True, exist_ok=True)
     run(["rclone", "copy", f"{READ_REMOTE}:output/{job_id}/", str(dest),
-         "--include", name], timeout=1800)
+         "--include", name, "--include", f"{job_id}_vi.srt"], timeout=1800)
     path = dest / name
     if not path.exists():
         raise JobError(f"output/{job_id}/ không có {name} — job chưa qua giai đoạn dub?")
