@@ -33,8 +33,8 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from wcontract import (  # noqa: E402
     COL_INDEX, STATUS_CLEANING, STATUS_DONE, STATUS_DUBBED, STATUS_DUBBING,
-    STATUS_ERROR, Job, finalize_command, has_enough_speech, parse_translated,
-    pick_jobs, pick_stale_jobs, reclaim_decision, vsr_command,
+    STATUS_ERROR, Job, clamp_delogo_area, finalize_command, has_enough_speech,
+    parse_translated, pick_jobs, pick_stale_jobs, reclaim_decision, vsr_command,
 )
 
 # ── Cấu hình (env override được) ─────────────────────────────────
@@ -184,6 +184,19 @@ def rclone_upload(src: Path, job_id: str) -> str:
     except ValueError:
         pass
     return f"(đã upload output/{job_id}/{src.name} — không lấy được link)"
+
+
+def video_size(path: Path) -> tuple[int, int]:
+    """(rộng, cao) theo pixel; (0, 0) nếu không đọc được."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+        capture_output=True, text=True, timeout=60)
+    try:
+        w, h = out.stdout.strip().split("x")[:2]
+        return int(w), int(h)
+    except ValueError:
+        return 0, 0
 
 
 def video_duration(path: Path) -> float:
@@ -472,9 +485,18 @@ def finalize_video(video_in: Path, srt_path: Path | None, out_path: Path,
         log(f"  {label}ffmpeg thiếu filter 'subtitles' (không có libass) — "
             f"chỉ che sub cũ, .srt vẫn lưu rời")
         burn = False
+    area = SUB_AREA
+    if area and COVER_MODE == "delogo":
+        w, h = video_size(video_in)
+        if w and h:
+            fixed = clamp_delogo_area(area, w, h)
+            if fixed != area:
+                log(f"  {label}delogo không nhận vùng chạm rìa khung "
+                    f"({w}x{h}) — co vùng {area} → {fixed}")
+                area = fixed
     cmd = finalize_command(
         str(video_in), str(srt_path) if burn else "", str(out_path),
-        cover_mode=COVER_MODE, area=SUB_AREA, burn_subs=burn,
+        cover_mode=COVER_MODE, area=area, burn_subs=burn,
         crf=X264_CRF, preset=X264_PRESET)
     t0 = time.time()
     run(cmd, timeout=3600)
@@ -540,6 +562,42 @@ def process_dub(ws, job: Job) -> None:
         notify(f"🚨 {job.id} lỗi hệ thống: {e}")
 
 
+# ── Giai đoạn hậu kỳ: post (DUBBED → CLEANING → DONE) ───────────
+
+def process_post(ws, job: Job) -> None:
+    """Hậu kỳ cho video ĐÃ dub: che sub cũ + đốt sub Việt → <id>_final.mp4.
+
+    Dùng cho các video dub xong trước khi có chức năng hậu kỳ — kéo
+    <id>_dubbed.mp4 và <id>_vi.srt từ Drive về, làm, đẩy lên. KHÔNG dub lại
+    nên không tốn GPU, chỉ tốn CPU.
+    """
+    t0 = time.time()
+    job_dir = WORK_DIR / job.id
+    try:
+        set_status(ws, job, STATUS_CLEANING)
+        dubbed = rclone_download_dubbed(job.id, job_dir)
+        srt_path = job_dir / f"{job.id}_vi.srt"
+        if not srt_path.exists():
+            srt_path = None
+            log(f"  [{job.id}] không có .srt trên Drive — chỉ che sub cũ")
+
+        final = finalize_video(dubbed, srt_path, job_dir / f"{job.id}_final.mp4",
+                               label=f"[{job.id}] ")
+        link = rclone_upload(final, job.id)
+        elapsed = int(time.time() - t0)
+        set_status(ws, job, STATUS_DONE, output_link=link,
+                   process_time=str(elapsed), error="")
+        notify(f"✅ {job.id} hậu kỳ xong ({elapsed}s): {job.title[:60]}")
+        shutil.rmtree(job_dir, ignore_errors=True)
+    except JobError as e:
+        set_status(ws, job, STATUS_ERROR, error=str(e)[:300])
+        notify(f"🚨 {job.id} lỗi hậu kỳ: {e}")
+    except Exception as e:
+        traceback.print_exc()
+        set_status(ws, job, STATUS_ERROR, error=f"Lỗi hệ thống: {e}"[:300])
+        notify(f"🚨 {job.id} lỗi hệ thống: {e}")
+
+
 # ── Giai đoạn B: vsr (DUBBED → CLEANING → DONE) ──────────────────
 
 def rclone_download_dubbed(job_id: str, dest: Path) -> Path:
@@ -583,13 +641,21 @@ def process_vsr(ws, job: Job) -> None:
         notify(f"🚨 {job.id} lỗi hệ thống: {e}")
 
 
-def process(ws, job: Job) -> None:
-    """Chọn giai đoạn theo status hiện tại của dòng."""
+def process(ws, job: Job, stage: str = "dub") -> None:
+    """Chọn giai đoạn theo stage; stage 'all' thì theo status của dòng.
+
+    Trước 18.08 hàm này chỉ xét status nên DUBBED luôn đi vào VSR — sai sau khi
+    thêm stage 'post', vì cả post lẫn vsr đều nhận DUBBED.
+    """
+    if stage == "post":
+        return process_post(ws, job)
+    if stage == "vsr":
+        return process_vsr(ws, job)
+    if stage == "dub":
+        return process_dub(ws, job)
+    # all: NEW → dub, DUBBED → hậu kỳ (VSR đã bỏ khỏi quy trình 18.08)
     current = job.raw[COL_INDEX["status"]].strip().upper()
-    if current == STATUS_DUBBED:
-        process_vsr(ws, job)
-    else:
-        process_dub(ws, job)
+    return process_post(ws, job) if current == STATUS_DUBBED else process_dub(ws, job)
 
 
 # ── Health check + vòng lặp chính ────────────────────────────────
@@ -604,7 +670,9 @@ def health_check(stage: str) -> None:
             requests.get(f"{VS_API}/health", timeout=10).raise_for_status()
         except requests.RequestException:
             problems.append(f"VoiceStudio API ({VS_API}) không phản hồi — chạy /root/start_voicestudio.sh")
-    if stage in ("vsr", "all") and not Path(VSR_PY).exists():
+    if stage == "post" and shutil.which("ffmpeg") is None:
+        problems.append("Không thấy ffmpeg — stage post cần nó để che sub + đốt sub")
+    if stage == "vsr" and not Path(VSR_PY).exists():
         problems.append(f"Không thấy VSR tại {VSR_PY} — chạy worker/setup.sh")
     if problems:
         sys.exit("Health check thất bại:\n  - " + "\n  - ".join(problems))
@@ -620,8 +688,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true", help="xử lý 1 lượt rồi thoát")
     ap.add_argument("--stage", default=os.environ.get("WORKER_STAGE", "dub"),
-                    choices=["dub", "vsr", "all"],
-                    help="dub: NEW→DUBBED · vsr: DUBBED→DONE · all: cả hai")
+                    choices=["dub", "post", "vsr", "all"],
+                    help="dub: NEW→DUBBED · post: DUBBED→DONE (hậu kỳ ffmpeg) · "
+                         "vsr: DUBBED→DONE (xoá sub, đã bỏ) · all: dub rồi post")
     args = ap.parse_args()
 
     health_check(args.stage)
@@ -674,10 +743,10 @@ def main() -> None:
                 f"(song song {workers}): {[j.id for j in batch]}")
             if workers <= 1:
                 for job in batch:
-                    process(ws, job)
+                    process(ws, job, args.stage)
             else:
                 with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = {pool.submit(process, ws, job): job for job in batch}
+                    futures = {pool.submit(process, ws, job, args.stage): job for job in batch}
                     for fut in as_completed(futures):
                         try:
                             fut.result()

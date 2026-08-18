@@ -67,6 +67,9 @@ def parse_row(row_number: int, row: list[str]) -> Job:
 # stage → status đầu vào mà worker của stage đó nhận
 STAGE_INPUT = {
     "dub": {STATUS_NEW},
+    # post: hậu kỳ cho video ĐÃ dub — che sub cũ + đốt sub Việt, không dub lại.
+    # Dùng cho ~80 video dub xong trước khi có chức năng hậu kỳ.
+    "post": {STATUS_DUBBED},
     "vsr": {STATUS_DUBBED},
     "all": {STATUS_NEW, STATUS_DUBBED},
 }
@@ -138,6 +141,22 @@ def escape_filter_path(path: str) -> str:
 
 
 COVER_MODES = ("delogo", "blur", "box")
+
+
+def clamp_delogo_area(area: str, width: int, height: int) -> str:
+    """Kéo vùng vào trong khung 1px cho delogo.
+
+    delogo cần viền xung quanh để nội suy nên KHÔNG nhận vùng chạm rìa —
+    ffmpeg trả 'Logo area is outside of the frame' rồi chết giữa job (đã dính
+    18.08 khi thử area='860,1080,0,1920' trên video 1920x1080).
+    """
+    parts = [int(p) for p in area.replace(",", " ").split() if p.strip()]
+    if len(parts) != 4:
+        raise ValueError(f"area cần 4 số 'ymin,ymax,xmin,xmax', nhận: {area!r}")
+    ymin, ymax, xmin, xmax = parts
+    ymin, xmin = max(1, ymin), max(1, xmin)
+    ymax, xmax = min(height - 1, ymax), min(width - 1, xmax)
+    return f"{ymin},{ymax},{xmin},{xmax}"
 
 
 def cover_filter(mode: str, area: str) -> str:
