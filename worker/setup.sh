@@ -312,17 +312,56 @@ else
   warn "→ dán JSON token nó in ra vào secrets/rclone-user-token.json, scp secrets/ lên /root/, chạy lại setup.sh"
 fi
 
+# Cấu hình chạy để ở FILE, không bắt nhớ biến môi trường mỗi lần gõ lệnh.
+# Không ghi đè nếu đã có — người dùng có thể đã sửa toạ độ vùng sub cho bộ
+# video của mình.
+if [ ! -f "$ROOT/worker.env" ]; then
+  cat > "$ROOT/worker.env" <<'ENVEOF'
+# Vùng phụ đề cần xoá: "ymin,ymax,xmin,xmax" (pixel).
+# BẮT BUỘC khi paddle chạy CPU — thiếu thì VSR không dò ra gì và báo lỗi.
+# Giá trị dưới đo cho video dọc 1920x1080; đổi độ phân giải phải đo lại
+# (trích 1 frame ra xem chữ nằm ở đâu).
+VSR_SUB_AREA="860,1010,100,1820"
+
+# Số video dub song song. 3 luồng nhanh ~1.8x so với tuần tự (đo trên 3090).
+DUB_CONCURRENCY=3
+
+# Cách xử lý câu dịch dài hơn khung gốc — xem README, đừng đổi nếu chưa đọc.
+TIMING_STRATEGY=smart_fit
+
+# Chặng chạy khi gọi start_worker.sh không kèm tham số:
+#   dub = chỉ lồng tiếng (NEW→DUBBED, duyệt trước cho rẻ)
+#   all = lồng tiếng xong xoá sub luôn (NEW→DONE)
+WORKER_STAGE=all
+ENVEOF
+  ok "Đã tạo $ROOT/worker.env (sửa VSR_SUB_AREA ở đây nếu đổi độ phân giải)"
+else
+  ok "worker.env đã có — giữ nguyên"
+fi
+
 cat > "$ROOT/start_worker.sh" <<EOF
 #!/usr/bin/env bash
 # Bật worker. Stage mặc định 'dub' (NEW→DUBBED); 'vsr' (DUBBED→DONE); 'all'.
 #   bash start_worker.sh          # dub
-#   bash start_worker.sh vsr      # xóa sub + ghép thành phẩm
+#   bash start_worker.sh all      # dub xong xoá sub luôn
+# Cấu hình đọc từ /root/worker.env — sửa ở đó, không cần gõ biến trên dòng lệnh.
+set -a
+[ -f "$ROOT/worker.env" ] && . "$ROOT/worker.env"
+set +a
 STAGE="\${1:-\${WORKER_STAGE:-dub}}"
+
+if [ "\$STAGE" != "dub" ] && [ -z "\${VSR_SUB_AREA:-}" ]; then
+  echo "! VSR_SUB_AREA rỗng — VSR sẽ không dò ra vùng sub nào và job sẽ lỗi."
+  echo "  Sửa /root/worker.env rồi chạy lại."
+  exit 1
+fi
+
 for pid in \$(pgrep -f 'worker-venv/bin/python.*worker.py'); do kill "\$pid" 2>/dev/null || true; done
 sleep 1
 setsid nohup "$WK_VENV/bin/python" "$ROOT/duoyin-videos/worker/worker.py" --stage "\$STAGE" \\
   > /tmp/worker.log 2>&1 < /dev/null &
 echo "Worker stage=\$STAGE đang chạy (pid \$!) — log: tail -f /tmp/worker.log"
+echo "  vùng sub: \${VSR_SUB_AREA:-(không đặt)} · song song: \${DUB_CONCURRENCY:-3}"
 EOF
 chmod +x "$ROOT/start_worker.sh"
 
