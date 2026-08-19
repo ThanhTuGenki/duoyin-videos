@@ -39,6 +39,19 @@ Muốn bỏ luôn 7 phút chờ mirror paddle (chỉ cần cho VSR, mà ta khôn
 PADDLE_MODE=cpu ./deploy.sh <IP> <PORT> '<PASSWORD>'
 ```
 
+### Cập nhật code sau này
+
+Repo đã public nên không cần đẩy file. Sửa code ở máy mình → commit + push →
+trên container:
+
+```bash
+cd /root/duoyin-videos && git pull
+```
+
+`deploy.sh` cũng lấy code bằng git chứ không đóng gói scp nữa (scp treo giữa
+phiên ngày 18.08 làm kẹt cả buổi; git thì luôn chạy). Chỉ `secrets/` là vẫn
+phải scp — nó gitignore, và chỉ làm một lần cho mỗi máy.
+
 ## Bước 2 — trên Termius: kiểm môi trường
 
 Kết nối `root@<IP>` đúng **cổng SSH** (panel ezycloudx ghi ở dòng `SSH Cmd`,

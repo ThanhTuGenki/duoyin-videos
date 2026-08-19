@@ -18,6 +18,8 @@ PASS="${3:?Thiếu password}"
 [ -f secrets/sa.json ] || [ -f "$HOME/Desktop/Voice/shareup-dev-451ba9cdf667.json" ] \
   || { echo "Không thấy service account key"; exit 1; }
 
+REPO_URL="${REPO_URL:-https://github.com/ThanhTuGenki/duoyin-videos.git}"
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -50,17 +52,32 @@ SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLeve
 rsh() { _expect ssh -p "$PORT" $SSH_OPTS "root@$IP" "$*"; }
 rcp() { _expect scp -r -P "$PORT" $SSH_OPTS "$1" "root@$IP:$2"; }
 
-echo "━━ 1/4 Đóng gói code + secrets"
-tar czf "$TMP/worker.tgz" --exclude='.venv-dev' --exclude='__pycache__' --exclude='.pytest_cache' worker
+echo "━━ 1/4 Gói secrets (code lấy bằng git, không đóng gói nữa)"
 mkdir -p "$TMP/secrets"
 cp -r secrets/* "$TMP/secrets/" 2>/dev/null || true
 [ -f "$TMP/secrets/sa.json" ] || cp "$HOME/Desktop/Voice/shareup-dev-451ba9cdf667.json" "$TMP/secrets/sa.json"
 
-echo "━━ 2/4 Đẩy lên container"
-rsh "mkdir -p /root/duoyin-videos /root/secrets /root/.config/rclone" >/dev/null
-rcp "$TMP/worker.tgz" /root/worker.tgz >/dev/null
+echo "━━ 2/4 Lấy code trên container + đẩy secrets"
+rsh "mkdir -p /root/secrets /root/.config/rclone" >/dev/null
+# Code lấy thẳng từ GitHub (repo đã public 18.08). Trước đây đóng gói tar rồi
+# scp lên — hôm 18.08 scp treo giữa phiên và cả buổi kẹt ở đó, trong khi git
+# thì luôn chạy. Thêm nữa người dùng tự cập nhật được bằng `git pull`, không
+# phụ thuộc máy nào đẩy file lên.
+#
+# checkout -B main FETCH_HEAD: `git init` tạo nhánh tên `master` nên `git pull`
+# sau đó báo "no tracking information" (đã dính 18.08). Ép về `main` và gắn
+# upstream để lần sau `git pull` trơn là chạy.
+rsh "set -e
+# Bước này chạy TRƯỚC bootstrap.sh (nơi apt cài git), nên máy mới tinh có thể
+# chưa có git — tự cài trước khi dùng.
+command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git; }
+if [ -d /root/duoyin-videos/.git ]; then cd /root/duoyin-videos && git fetch --depth 1 origin main
+else rm -rf /root/duoyin-videos && git clone -q --depth 1 $REPO_URL /root/duoyin-videos && cd /root/duoyin-videos && git fetch --depth 1 origin main
+fi
+git checkout -qB main FETCH_HEAD
+git branch -q --set-upstream-to=origin/main main 2>/dev/null || true
+echo CODE_OK \$(git log --oneline -1)" | tail -1
 rcp "$TMP/secrets" /root/ >/dev/null
-rsh "cd /root/duoyin-videos && tar xzf /root/worker.tgz 2>/dev/null; echo CODE_OK" | tail -1
 
 # rclone config: remote đọc (service account). Remote ghi do setup.sh tự tạo từ token.
 rsh "printf '[gdrive]\ntype = drive\nscope = drive\nservice_account_file = /root/secrets/sa.json\nroot_folder_id = 14sfsTkv-k8S2rqR5kFj6EoVr_RBqXsjh\n' > /root/.config/rclone/rclone.conf; echo RCLONE_CONF_OK" | tail -1
